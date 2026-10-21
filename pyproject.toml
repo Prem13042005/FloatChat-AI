@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "floatchat"
+version = "0.5.0"
+description = "FloatChat — Agentic AI-Powered Conversational Ocean Data Discovery and Analysis Platform"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0.0",
+    "sqlglot>=20.0.0",
+    "pandas>=2.0.0",
+    "pyarrow>=14.0.0",
+    "psycopg2-binary>=2.9.0",
+    "netCDF4>=1.6.0",
+    "langgraph>=0.2.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "httpx>=0.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "google-generativeai>=0.3.0",
+]

@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  floatchat-db:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.db
+    image: floatchat-postgis-pgvector:15-3.3
+    container_name: floatchat_postgis_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-floatchat_db}
+      POSTGRES_USER: ${POSTGRES_USER:-floatchat_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-floatchat_password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-floatchat_user} -d ${POSTGRES_DB:-floatchat_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+    driver: local

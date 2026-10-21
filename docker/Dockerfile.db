@@ -1,0 +1,24 @@
+# ===================================================================
+# FloatChat Database Container: PostgreSQL 15 with PostGIS & pgvector
+# ===================================================================
+# Base image postgis/postgis:15-3.3 provides PostgreSQL 15.x and PostGIS 3.3.
+# The base image is Debian-based and includes the PostgreSQL Global Development
+# Group (PGDG) apt repository, which distributes the official postgresql-15-pgvector
+# package.
+#
+# This Dockerfile adds postgresql-15-pgvector to provide both PostGIS spatial
+# indexing (for ARGO float coordinates) and pgvector dense vector indexing
+# (for RAG scientific document embeddings) in a single reproducible container.
+# ===================================================================
+
+FROM postgis/postgis:15-3.3
+
+LABEL maintainer="FloatChat Team"
+LABEL description="PostgreSQL 15 with PostGIS 3.3 and pgvector for FloatChat"
+
+# Point PGDG repository to official archive for Debian Bullseye and install pgvector
+RUN sed -i 's/apt.postgresql.org/apt-archive.postgresql.org/g' /etc/apt/sources.list.d/*.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        postgresql-15-pgvector && \
+    rm -rf /var/lib/apt/lists/*

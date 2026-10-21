@@ -1,0 +1,47 @@
+{
+  "input_file": "D:\\FLOATCHAT\\Indian_ARGO_Floats_0f9d_516d_c560_U1788882326310.nc",
+  "input_row_count": 17339,
+  "output_measurement_count": 17339,
+  "unique_platform_count": 21,
+  "unique_profile_count": 64,
+  "missing_values": {
+    "pressure": 1,
+    "temperature": 0,
+    "salinity": 4,
+    "latitude": 0,
+    "longitude": 0,
+    "time": 0,
+    "platform_number": 0
+  },
+  "duplicate_analysis": {
+    "exact_duplicates": 0,
+    "duplicate_candidate_groups": 0,
+    "conflicting_measurements": 0
+  },
+  "coordinate_validation": {
+    "invalid_latitude_count": 0,
+    "invalid_longitude_count": 0,
+    "profile_coordinate_conflicts": 0
+  },
+  "timestamp_validation": {
+    "invalid_timestamp_count": 0,
+    "minimum_timestamp": "2024-01-02T13:22:00+00:00",
+    "maximum_timestamp": "2024-01-31T13:58:23+00:00"
+  },
+  "pressure_summary": {
+    "minimum": 0.0,
+    "maximum": 2034.9000244140625,
+    "null_count": 1
+  },
+  "temperature_summary": {
+    "minimum": 2.8369998931884766,
+    "maximum": 29.902000427246094,
+    "null_count": 0
+  },
+  "salinity_summary": {
+    "minimum": 23.236000061035156,
+    "maximum": 38.90800094604492,
+    "null_count": 4
+  },
+  "rejected_record_count": 0
+}
