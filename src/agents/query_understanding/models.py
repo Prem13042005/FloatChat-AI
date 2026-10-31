@@ -7,8 +7,8 @@ taxonomy classifications, and physical spatial-temporal slot constraints.
 """
 
 from enum import Enum
-from typing import List, Optional
-from pydantic import BaseModel, Field, model_validator
+from typing import Any, List, Optional
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class IntentType(str, Enum):
@@ -148,6 +148,17 @@ class QueryIntent(BaseModel):
         default_factory=list,
         description="List of targeted float platform WMO identification numbers"
     )
+
+    @field_validator("wmo_ids", mode="before")
+    @classmethod
+    def coerce_null_wmo_ids(cls, v: Any) -> Any:
+        """
+        Coerces explicit null/None values for wmo_ids into an empty list.
+        Preserves valid lists and lets Pydantic reject invalid non-list types.
+        """
+        if v is None:
+            return []
+        return v
     comparison_target: Optional[ComparisonTarget] = Field(
         default=None,
         description="Comparison targets and properties if query is a comparison"

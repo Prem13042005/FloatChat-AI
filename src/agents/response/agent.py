@@ -16,10 +16,10 @@ Responsibilities:
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
-from src.agents.query_understanding.models import IntentType, QueryIntent
+from src.agents.query_understanding.models import IntentType, PhysicalVariable, QueryIntent
 from src.agents.response.exceptions import (
     ResponseAgentException,
     ResponseGenerationError,
@@ -42,7 +42,9 @@ from src.config import Config, get_config
 from src.database.models import DatabaseExecutionResult
 from src.llm import BaseLLMProvider, LLMProviderError, get_llm_provider
 from src.rag.models import RetrievalResult, RetrievedChunk
-from src.rag.retriever import ScientificDocumentRetriever
+
+if TYPE_CHECKING:
+    from src.rag.retriever import ScientificDocumentRetriever
 
 logger = logging.getLogger("floatchat.agents.response")
 
@@ -66,7 +68,7 @@ class ScientificResponseAgent:
     def __init__(
         self,
         llm_provider: Optional[BaseLLMProvider] = None,
-        retriever: Optional[ScientificDocumentRetriever] = None,
+        retriever: Optional["ScientificDocumentRetriever"] = None,
         config: Optional[Config] = None,
     ):
         """
@@ -79,7 +81,11 @@ class ScientificResponseAgent:
         """
         self.config = config or get_config()
         self.llm_provider = llm_provider if llm_provider is not None else get_llm_provider()
-        self.retriever = retriever if retriever is not None else ScientificDocumentRetriever(config=self.config)
+        if retriever is not None:
+            self.retriever = retriever
+        else:
+            from src.rag.retriever import ScientificDocumentRetriever
+            self.retriever = ScientificDocumentRetriever(config=self.config)
 
     def respond(
         self,
@@ -164,8 +170,14 @@ class ScientificResponseAgent:
             )
 
         if is_data_only and db_result is not None and db_result.is_success and db_result.row_count == 0:
+            msg = "No observation records matched the specified spatial-temporal filters in the database."
+            if intent and intent.temporal_range and (
+                (intent.temporal_range.start_date and intent.temporal_range.start_date > "2025-04-01")
+                or (intent.temporal_range.end_date and intent.temporal_range.end_date > "2025-04-01")
+            ):
+                msg += " Note: The currently loaded FloatChat ARGO dataset contains observations only through April 1, 2025. This empty result reflects local dataset coverage boundaries rather than the absence of global ARGO float operations."
             return ScientificResponse(
-                answer="No observation records matched the specified spatial-temporal filters in the database.",
+                answer=msg,
                 citations=[],
                 data_summary=data_summary,
                 visualization_spec=None,
@@ -319,13 +331,45 @@ class ScientificResponseAgent:
         # Identify key column candidates
         pres_col = cols_lower_map.get("pres") or cols_lower_map.get("pressure") or cols_lower_map.get("pressure_dbar")
         temp_col = cols_lower_map.get("temp") or cols_lower_map.get("temperature") or cols_lower_map.get("temperature_c")
-        psal_col = cols_lower_map.get("psal") or cols_lower_map.get("salinity")
+        psal_col = (
+            cols_lower_map.get("psal")
+            or cols_lower_map.get("salinity")
+            or cols_lower_map.get("salinity_psu")
+        )
         lat_col = cols_lower_map.get("lat") or cols_lower_map.get("latitude")
         lon_col = cols_lower_map.get("lon") or cols_lower_map.get("longitude") or cols_lower_map.get("long")
         time_col = next((cols_lower_map[c] for c in cols_lower_map if "time" in c or "date" in c), None)
         series_col = cols_lower_map.get("platform_number") or cols_lower_map.get("wmo_id") or cols_lower_map.get("cycle_number")
 
+        # Verify usable (non-null) data for physical variables
+        if psal_col:
+            has_usable_salinity = any(r.get(psal_col) is not None for r in db_result.rows)
+            if not has_usable_salinity:
+                psal_col = None
+
+        if temp_col:
+            has_usable_temp = any(r.get(temp_col) is not None for r in db_result.rows)
+            if not has_usable_temp:
+                temp_col = None
+
+        # Check intent preference for variable
+        prefers_salinity = False
+        if intent and intent.physical_variables:
+            vars_set = set(intent.physical_variables)
+            if PhysicalVariable.PSAL in vars_set and PhysicalVariable.TEMP not in vars_set:
+                prefers_salinity = True
+
         # 1. Vertical Oceanographic Profile: (Temperature or Salinity vs Pressure/Depth)
+        if pres_col and psal_col and prefers_salinity:
+            return VisualizationSpec(
+                chart_type=ChartType.LINE,
+                x_axis=psal_col,
+                y_axis=pres_col,
+                title="Vertical Salinity Profile (S vs P)",
+                invert_y=True,
+                series_column=series_col,
+                description="Vertical salinity profile showing water column structure with inverted pressure axis.",
+            )
         if pres_col and temp_col:
             return VisualizationSpec(
                 chart_type=ChartType.LINE,
@@ -361,7 +405,12 @@ class ScientificResponseAgent:
 
         # 3. Temporal Trend / Time Series: (Time vs Physical Variable)
         if time_col and (temp_col or psal_col):
-            y_col = temp_col or psal_col
+            if prefers_salinity and psal_col:
+                y_col = psal_col
+            elif temp_col:
+                y_col = temp_col
+            else:
+                y_col = psal_col
             var_name = "Temperature" if y_col == temp_col else "Salinity"
             return VisualizationSpec(
                 chart_type=ChartType.LINE,

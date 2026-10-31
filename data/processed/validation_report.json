@@ -4,6 +4,12 @@
   "output_measurement_count": 17339,
   "unique_platform_count": 21,
   "unique_profile_count": 64,
+  "salinity_source_variable": "PSAL",
+  "measurement_id_range": {
+    "start_offset": 0,
+    "min_id": 1,
+    "max_id": 17339
+  },
   "missing_values": {
     "pressure": 1,
     "temperature": 0,

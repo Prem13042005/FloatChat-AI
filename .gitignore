@@ -72,5 +72,11 @@ yarn-error.log*
 *~
 .DS_Store
 
-# Explicit exception: Retain the local development NetCDF dataset for team execution
+# Scientific raw netCDF data files
+*.nc
 !Indian_ARGO_Floats_0f9d_516d_c560_U1788882326310.nc
+
+# Local exports and test datasets
+data/export_baseline_2024/
+data/processed_2025/
+

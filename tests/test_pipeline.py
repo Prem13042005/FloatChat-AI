@@ -115,5 +115,75 @@ class TestARGOPipeline(unittest.TestCase):
         self.assertIn("profile_id", df_p.columns)
         self.assertIn("measurement_id", df_m.columns)
 
+
+NC_PATH_2025 = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Indian_ARGO_Floats_2a67_0428_3464_U1792860969237.nc"))
+PROCESSED_2025_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "processed_2025"))
+
+
+class TestIncrementalPipelinePreparation(unittest.TestCase):
+    """
+    Focused test suite for Phase E1:
+    - PSAL vs PSAL_ADJUSTED source variable normalization
+    - Preservation of missing adjusted salinity as nulls
+    - Collision-safe measurement ID generation and collision guardrails
+    - Preservation of original Phase 1 processed Parquet files
+    """
+
+    def test_psal_source_variable_normalization(self):
+        """Verify normalization uses PSAL when present (2024 file)."""
+        df_2024 = load_and_normalize_netcdf(NC_PATH)
+        self.assertEqual(df_2024.attrs.get("salinity_source_variable"), "PSAL")
+        self.assertIn("salinity_psu", df_2024.columns)
+        self.assertEqual(df_2024["salinity_psu"].isna().sum(), 4)
+
+    def test_psal_adjusted_source_variable_normalization(self):
+        """Verify normalization dynamically detects PSAL_ADJUSTED and maps to salinity_psu (2025 file)."""
+        df_2025 = load_and_normalize_netcdf(NC_PATH_2025)
+        self.assertEqual(df_2025.attrs.get("salinity_source_variable"), "PSAL_ADJUSTED")
+        self.assertIn("salinity_psu", df_2025.columns)
+        self.assertNotIn("PSAL_ADJUSTED", df_2025.columns)
+
+    def test_missing_adjusted_salinity_preserved_as_null(self):
+        """Verify 4,737 missing adjusted salinity values remain null (no zeroes or sentinels)."""
+        df_2025 = load_and_normalize_netcdf(NC_PATH_2025)
+        null_count = df_2025["salinity_psu"].isna().sum()
+        self.assertEqual(null_count, 4737)
+        # Ensure no remaining 99999.0 sentinels or 0.0 placeholders
+        self.assertEqual((df_2025["salinity_psu"] == 99999.0).sum(), 0)
+        self.assertEqual((df_2025["salinity_psu"] == 0.0).sum(), 0)
+
+    def test_measurement_id_collision_prevention(self):
+        """Verify explicit and auto-detected offsets produce non-colliding IDs and reject unsafe offsets."""
+        # 1. Unsafe offset raises ValueError
+        with self.assertRaises(ValueError) as ctx:
+            run_pipeline(NC_PATH_2025, PROCESSED_2025_DIR, id_start_offset=1000, reference_dir=TEST_OUTPUT_DIR)
+        self.assertIn("Measurement ID Collision Risk", str(ctx.exception))
+
+        # 2. Safe offset produces IDs starting at offset + 1
+        report = run_pipeline(NC_PATH_2025, PROCESSED_2025_DIR, id_start_offset=17339, reference_dir=TEST_OUTPUT_DIR)
+        self.assertEqual(report["measurement_id_range"]["start_offset"], 17339)
+        self.assertEqual(report["measurement_id_range"]["min_id"], 17340)
+        self.assertEqual(report["measurement_id_range"]["max_id"], 26046)
+
+        df_m_2025 = pd.read_parquet(os.path.join(PROCESSED_2025_DIR, "measurements.parquet"))
+        df_m_2024 = pd.read_parquet(os.path.join(TEST_OUTPUT_DIR, "measurements.parquet"))
+        overlap = set(df_m_2025["measurement_id"]).intersection(set(df_m_2024["measurement_id"]))
+        self.assertEqual(len(overlap), 0)
+
+    def test_preservation_of_original_processed_files(self):
+        """Verify original data/processed/ files remain completely unmodified."""
+        floats_p = os.path.join(TEST_OUTPUT_DIR, "floats.parquet")
+        profiles_p = os.path.join(TEST_OUTPUT_DIR, "profiles.parquet")
+        measurements_p = os.path.join(TEST_OUTPUT_DIR, "measurements.parquet")
+
+        self.assertTrue(os.path.exists(floats_p))
+        self.assertTrue(os.path.exists(profiles_p))
+        self.assertTrue(os.path.exists(measurements_p))
+
+        self.assertEqual(len(pd.read_parquet(floats_p)), 21)
+        self.assertEqual(len(pd.read_parquet(profiles_p)), 64)
+        self.assertEqual(len(pd.read_parquet(measurements_p)), 17339)
+
+
 if __name__ == "__main__":
     unittest.main()

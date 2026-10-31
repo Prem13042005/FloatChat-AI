@@ -10,6 +10,23 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+def _load_env_file():
+    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if k not in os.environ:
+                        os.environ[k] = v
+
+
+_load_env_file()
+
+
 @dataclass
 class Config:
     # -------------------------------------------------------------------
@@ -51,6 +68,8 @@ class Config:
     cors_origins: str = ""
     request_timeout_seconds: float = 60.0
     max_query_length: int = 2000
+    max_concurrent_inferences: int = 1
+    inference_retry_after_seconds: int = 30
 
     def __post_init__(self):
         if not self.llm_provider:
@@ -106,6 +125,10 @@ class Config:
             self.request_timeout_seconds = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60.0"))
         if self.max_query_length == 2000:
             self.max_query_length = int(os.getenv("MAX_QUERY_LENGTH", "2000"))
+        if self.max_concurrent_inferences == 1:
+            self.max_concurrent_inferences = int(os.getenv("MAX_CONCURRENT_INFERENCES", "1"))
+        if self.inference_retry_after_seconds == 30:
+            self.inference_retry_after_seconds = int(os.getenv("INFERENCE_RETRY_AFTER_SECONDS", "30"))
 
     @property
     def allowed_cors_origins(self) -> list:

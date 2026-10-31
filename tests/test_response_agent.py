@@ -641,6 +641,132 @@ class TestScientificResponseAgent(unittest.TestCase):
         response = self.agent.respond(query="Show temp", db_result=db_result)
         self.assertEqual(response.data_summary.total_records, 2)
 
+    # ===================================================================
+    # 8. Salinity Visualization Spec Grounding & NULL Handling Tests
+    # ===================================================================
+
+    def test_20_salinity_visualization_with_psal_column(self):
+        """Verify candidate visualization is generated when column is named 'psal'."""
+        db_result = DatabaseExecutionResult(
+            status=ExecutionStatus.SUCCESS,
+            columns=["pressure_dbar", "psal", "platform_number"],
+            rows=[
+                {"pressure_dbar": 10.0, "psal": 35.2, "platform_number": "2901333"},
+                {"pressure_dbar": 50.0, "psal": 35.4, "platform_number": "2901333"},
+                {"pressure_dbar": 100.0, "psal": 35.8, "platform_number": "2901333"},
+            ],
+            row_count=3,
+        )
+        spec = self.agent._build_visualization_spec(db_result)
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec.chart_type, ChartType.LINE)
+        self.assertEqual(spec.x_axis, "psal")
+        self.assertEqual(spec.y_axis, "pressure_dbar")
+        self.assertTrue(spec.invert_y)
+        self.assertEqual(spec.series_column, "platform_number")
+
+    def test_21_salinity_visualization_with_salinity_column(self):
+        """Verify candidate visualization is generated when column is named 'salinity'."""
+        db_result = DatabaseExecutionResult(
+            status=ExecutionStatus.SUCCESS,
+            columns=["pressure_dbar", "salinity", "platform_number"],
+            rows=[
+                {"pressure_dbar": 15.0, "salinity": 36.1, "platform_number": "2901333"},
+                {"pressure_dbar": 60.0, "salinity": 36.3, "platform_number": "2901333"},
+            ],
+            row_count=2,
+        )
+        spec = self.agent._build_visualization_spec(db_result)
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec.chart_type, ChartType.LINE)
+        self.assertEqual(spec.x_axis, "salinity")
+        self.assertEqual(spec.y_axis, "pressure_dbar")
+        self.assertTrue(spec.invert_y)
+
+    def test_22_salinity_visualization_with_salinity_psu_column(self):
+        """Verify candidate visualization is generated when column is canonical 'salinity_psu'."""
+        db_result = DatabaseExecutionResult(
+            status=ExecutionStatus.SUCCESS,
+            columns=["pressure_dbar", "salinity_psu", "platform_number"],
+            rows=[
+                {"pressure_dbar": 20.0, "salinity_psu": 35.5, "platform_number": "1902672"},
+                {"pressure_dbar": 80.0, "salinity_psu": 35.7, "platform_number": "1902672"},
+            ],
+            row_count=2,
+        )
+        spec = self.agent._build_visualization_spec(db_result)
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec.chart_type, ChartType.LINE)
+        self.assertEqual(spec.x_axis, "salinity_psu")
+        self.assertEqual(spec.y_axis, "pressure_dbar")
+        self.assertTrue(spec.invert_y)
+
+    def test_23_salinity_visualization_null_handling(self):
+        """Verify NULL salinity is preserved without converting to zero, and omitted when all are NULL."""
+        # Case A: Partial NULLs -> usable values exist, trace is generated with column preserved (not zeroed)
+        db_partial_null = DatabaseExecutionResult(
+            status=ExecutionStatus.SUCCESS,
+            columns=["pressure_dbar", "salinity_psu"],
+            rows=[
+                {"pressure_dbar": 10.0, "salinity_psu": 35.1},
+                {"pressure_dbar": 50.0, "salinity_psu": None},  # Missing measurement
+                {"pressure_dbar": 100.0, "salinity_psu": 35.6},
+            ],
+            row_count=3,
+        )
+        spec_partial = self.agent._build_visualization_spec(db_partial_null)
+        self.assertIsNotNone(spec_partial)
+        self.assertEqual(spec_partial.x_axis, "salinity_psu")
+
+        # Verify data summary does NOT convert NULL into 0.0
+        summary = self.agent._build_data_summary(db_partial_null)
+        self.assertIsNotNone(summary)
+        sal_hl = next(h for h in summary.highlights if "salinity_psu" in h)
+        self.assertIn("min=35.10", sal_hl)
+        self.assertNotIn("min=0.00", sal_hl)
+
+        # Case B: 100% NULLs -> no usable salinity values, trace is omitted
+        db_all_null = DatabaseExecutionResult(
+            status=ExecutionStatus.SUCCESS,
+            columns=["pressure_dbar", "salinity_psu"],
+            rows=[
+                {"pressure_dbar": 10.0, "salinity_psu": None},
+                {"pressure_dbar": 50.0, "salinity_psu": None},
+            ],
+            row_count=2,
+        )
+        spec_all_null = self.agent._build_visualization_spec(db_all_null)
+        self.assertIsNone(spec_all_null, "Trace should be omitted when no usable salinity values exist")
+
+    def test_24_visualization_without_salinity_column(self):
+        """Verify visualization behavior when salinity column is completely absent."""
+        # With pressure and temperature -> produces temperature profile
+        db_temp_only = DatabaseExecutionResult(
+            status=ExecutionStatus.SUCCESS,
+            columns=["pressure_dbar", "temperature_c"],
+            rows=[
+                {"pressure_dbar": 10.0, "temperature_c": 28.0},
+                {"pressure_dbar": 50.0, "temperature_c": 24.5},
+            ],
+            row_count=2,
+        )
+        spec_temp = self.agent._build_visualization_spec(db_temp_only)
+        self.assertIsNotNone(spec_temp)
+        self.assertEqual(spec_temp.x_axis, "temperature_c")
+
+        # Without any physical variable columns -> returns None
+        db_no_var = DatabaseExecutionResult(
+            status=ExecutionStatus.SUCCESS,
+            columns=["measurement_id", "profile_id"],
+            rows=[
+                {"measurement_id": 1, "profile_id": "P1"},
+                {"measurement_id": 2, "profile_id": "P2"},
+            ],
+            row_count=2,
+        )
+        spec_no_var = self.agent._build_visualization_spec(db_no_var)
+        self.assertIsNone(spec_no_var)
+
 
 if __name__ == "__main__":
     unittest.main()

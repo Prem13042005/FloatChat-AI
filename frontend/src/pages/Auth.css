@@ -1,0 +1,48 @@
+.auth-card label {
+  display: block;
+  margin: 14px 0 6px;
+  font-weight: 600;
+}
+
+.auth-card input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 15px;
+}
+
+.auth-card button {
+  width: 100%;
+  padding: 12px;
+  margin-top: 12px;
+  border: none;
+  border-radius: 8px;
+  background: #2563eb;
+  color: white;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.auth-card button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.error-message {
+  margin: 12px 0;
+  color: #b91c1c;
+}
+
+.success-message {
+  margin: 12px 0;
+  color: #15803d;
+}
+
+.auth-link span {
+  color: #2563eb;
+  cursor: pointer;
+}

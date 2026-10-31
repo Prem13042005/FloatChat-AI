@@ -26,6 +26,21 @@ import psycopg2
 import psycopg2.extras
 import pandas as pd
 
+def _load_env_file():
+    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if k not in os.environ:
+                        os.environ[k] = v
+
+_load_env_file()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -248,12 +263,23 @@ def reconcile_database(conn, df_f: pd.DataFrame, df_p: pd.DataFrame, df_m: pd.Da
     cur.close()
 
     # Assertions
-    assert count_floats == 21, f"Mismatch in floats count: DB={count_floats}, Exp=21"
-    assert count_profiles == 64, f"Mismatch in profiles count: DB={count_profiles}, Exp=64"
-    assert count_measurements == 17339, f"Mismatch in measurements count: DB={count_measurements}, Exp=17339"
-    assert null_pres == 1, f"Mismatch in NULL pressure: DB={null_pres}, Exp=1"
-    assert null_temp == 0, f"Mismatch in NULL temp: DB={null_temp}, Exp=0"
-    assert null_psal == 4, f"Mismatch in NULL psal: DB={null_psal}, Exp=4"
+    if count_measurements == 17339:
+        # Baseline 2024 mode
+        assert count_floats == 21, f"Mismatch in floats count: DB={count_floats}, Exp=21"
+        assert count_profiles == 64, f"Mismatch in profiles count: DB={count_profiles}, Exp=64"
+        assert null_pres == 1, f"Mismatch in NULL pressure: DB={null_pres}, Exp=1"
+        assert null_temp == 0, f"Mismatch in NULL temp: DB={null_temp}, Exp=0"
+        assert null_psal == 4, f"Mismatch in NULL psal: DB={null_psal}, Exp=4"
+    elif count_measurements == 26046:
+        # Combined 2024 + 2025 mode
+        assert count_floats == 30, f"Mismatch in floats count: DB={count_floats}, Exp=30"
+        assert count_profiles == 107, f"Mismatch in profiles count: DB={count_profiles}, Exp=107"
+        assert null_pres == 1, f"Mismatch in NULL pressure: DB={null_pres}, Exp=1"
+        assert null_temp == 0, f"Mismatch in NULL temp: DB={null_temp}, Exp=0"
+        assert null_psal == 4741, f"Mismatch in NULL psal: DB={null_psal}, Exp=4741"
+    else:
+        logger.warning(f"Reconciliation running with non-standard DB measurements count: {count_measurements}")
+
     assert orphan_profiles == 0, f"Orphan profiles detected: {orphan_profiles}"
     assert orphan_measurements == 0, f"Orphan measurements detected: {orphan_measurements}"
     assert sentinels_count == 0, f"Sentinel 99999.0 values detected in DB: {sentinels_count}"

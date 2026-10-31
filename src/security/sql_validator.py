@@ -348,9 +348,17 @@ class DeterministicSQLValidator:
         errors = []
 
         for func in ast.find_all(exp.Func, exp.Anonymous):
+            if isinstance(func, (exp.Connector, exp.Binary)):
+                continue
+
             # Extract function name cleanly from SQL syntax
-            raw_sql = func.sql()
-            func_name = raw_sql.split("(")[0].strip().lower()
+            if isinstance(func, exp.Anonymous):
+                func_name = func.name.lower()
+            elif hasattr(func, "sql_name"):
+                func_name = func.sql_name().lower()
+            else:
+                raw_sql = func.sql()
+                func_name = raw_sql.split("(")[0].strip().lower()
 
             if func_name in DISALLOWED_SYSTEM_FUNCTIONS:
                 errors.append(f"Forbidden system function '{func_name}'.")

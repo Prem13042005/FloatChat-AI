@@ -54,12 +54,16 @@ async def lifespan(app: FastAPI):
         app.state.config = config
         if getattr(app.state, "orchestrator", None) is None:
             app.state.orchestrator = FloatChatOrchestrator(config=config)
-        logger.info("FloatChat Orchestrator initialized successfully.")
+        if getattr(app.state, "inference_semaphore", None) is None:
+            app.state.inference_semaphore = asyncio.Semaphore(config.max_concurrent_inferences)
+        logger.info("FloatChat Orchestrator and Inference Semaphore initialized successfully.")
     except Exception as e:
         logger.error(f"Failed to initialize FloatChat Orchestrator during startup: {e}")
         # Allow app to start so health/ready checks can report status
         app.state.config = config
         app.state.orchestrator = None
+        if getattr(app.state, "inference_semaphore", None) is None:
+            app.state.inference_semaphore = asyncio.Semaphore(config.max_concurrent_inferences)
 
     yield
 
@@ -80,6 +84,7 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.config = app_config
+    app.state.inference_semaphore = asyncio.Semaphore(app_config.max_concurrent_inferences)
 
     # -------------------------------------------------------------------
     # CORS Middleware Configuration
@@ -119,10 +124,12 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
         logger.warning(f"HTTPException on {request.url.path} [{exc.status_code}]: {exc.detail}")
+        error_code = "RATE_LIMIT_EXCEEDED" if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS else "HTTP_ERROR"
         return JSONResponse(
             status_code=exc.status_code,
+            headers=exc.headers,
             content=ErrorDetail(
-                error_code="HTTP_ERROR",
+                error_code=error_code,
                 message=str(exc.detail),
             ).model_dump(),
         )
@@ -216,27 +223,64 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
     async def _execute_chat_workflow(
         payload: ChatRequest,
         orchestrator: FloatChatOrchestrator,
-        timeout_seconds: float,
+        config: Config,
+        request: Request,
     ) -> ChatResponse:
-        """Helper to invoke orchestrator with timeout and transform state to ChatResponse."""
+        """Helper to invoke orchestrator with timeout and concurrency protection."""
+        if len(payload.query) > config.max_query_length:
+            logger.warning(
+                "Query length (%d characters) exceeds configured maximum limit of %d characters",
+                len(payload.query),
+                config.max_query_length,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Query length exceeds the maximum allowed limit of {config.max_query_length} characters.",
+            )
+
+        sem: Optional[asyncio.Semaphore] = getattr(request.app.state, "inference_semaphore", None)
+        if sem is None:
+            sem = asyncio.Semaphore(config.max_concurrent_inferences)
+            request.app.state.inference_semaphore = sem
+
+        if sem.locked():
+            logger.warning(
+                "AI inference concurrency limit reached (%d). Rejecting request with HTTP 429.",
+                config.max_concurrent_inferences,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="AI service is currently busy processing another request. Please try again shortly.",
+                headers={"Retry-After": str(config.inference_retry_after_seconds)},
+            )
+
+        await sem.acquire()
         try:
             # Run blocking orchestrator.invoke in thread pool with timeout
             state: FloatChatState = await asyncio.wait_for(
                 asyncio.to_thread(orchestrator.invoke, payload.query, payload.session_id),
-                timeout=timeout_seconds,
+                timeout=config.request_timeout_seconds,
             )
         except asyncio.TimeoutError:
-            logger.warning(f"Workflow timeout on query: '{payload.query[:60]}...' after {timeout_seconds}s")
+            logger.warning(
+                "Workflow timeout after %0.1fs for query length %d",
+                config.request_timeout_seconds,
+                len(payload.query),
+            )
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail=f"Query execution timed out after {timeout_seconds} seconds.",
+                detail=f"Query execution timed out after {config.request_timeout_seconds} seconds.",
             )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Orchestration execution error: {e}", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Workflow execution encountered an internal error.",
             )
+        finally:
+            sem.release()
 
         # Build SQLMeta if database query was executed
         sql_meta = None
@@ -299,7 +343,7 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
         Processes natural-language queries through the LangGraph multi-agent workflow.
         """
         config = getattr(request.app.state, "config", None) or get_config()
-        return await _execute_chat_workflow(payload, orchestrator, config.request_timeout_seconds)
+        return await _execute_chat_workflow(payload, orchestrator, config, request)
 
     @app.post("/api/v1/query", response_model=ChatResponse, tags=["Orchestration"], include_in_schema=False)
     async def query_endpoint_alias(
@@ -309,7 +353,7 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
     ):
         """Alias for /api/v1/chat conforming to API_CONTRACTS.md."""
         config = getattr(request.app.state, "config", None) or get_config()
-        return await _execute_chat_workflow(payload, orchestrator, config.request_timeout_seconds)
+        return await _execute_chat_workflow(payload, orchestrator, config, request)
 
     return app
 

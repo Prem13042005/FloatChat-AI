@@ -307,5 +307,101 @@ class TestFastAPIService(unittest.TestCase):
         self.assertEqual(res.headers.get("access-control-allow-origin"), "http://localhost:3000")
 
 
+    # ===================================================================
+    # 6. Concurrency Protection & Rate Limiting (Phase F6B & F6C)
+    # ===================================================================
+
+    def test_13_concurrency_limit_rejects_with_429_and_retry_after(self):
+        """Verify prompt rejection with HTTP 429 and Retry-After header when concurrency limit is reached."""
+        sem = self.app.state.inference_semaphore
+        # Artificially lock the semaphore to simulate active inference
+        sem._value = 0
+        try:
+            res = self.client.post("/api/v1/chat", json={"query": "Test query while busy"})
+            self.assertEqual(res.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+            self.assertEqual(res.headers.get("retry-after"), "30")
+            data = res.json()
+            self.assertEqual(data["error_code"], "RATE_LIMIT_EXCEEDED")
+            self.assertIn("busy", data["message"].lower())
+        finally:
+            sem._value = 1
+
+    def test_14_concurrency_slot_released_on_success_and_error(self):
+        """Verify concurrency slot is always released after success and after errors."""
+        sem = self.app.state.inference_semaphore
+        self.assertEqual(sem._value, 1)
+
+        # 1. Success case
+        self.mock_orchestrator.invoke.return_value = {
+            "user_query": "Test query",
+            "intent_type": "KNOWLEDGE_ONLY",
+            "final_response": "Success answer",
+            "status": "SUCCESS",
+        }
+        res_success = self.client.post("/api/v1/chat", json={"query": "Test query"})
+        self.assertEqual(res_success.status_code, status.HTTP_200_OK)
+        self.assertEqual(sem._value, 1, "Semaphore slot must be released after successful inference")
+
+        # 2. Error case (orchestrator crash)
+        self.mock_orchestrator.invoke.side_effect = RuntimeError("Simulated crash")
+        res_error = self.client.post("/api/v1/chat", json={"query": "Crashing query"})
+        self.assertEqual(res_error.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        self.assertEqual(sem._value, 1, "Semaphore slot must be released after error")
+
+        # 3. Subsequent request succeeds after slot is released
+        self.mock_orchestrator.invoke.side_effect = None
+        self.mock_orchestrator.invoke.return_value = {
+            "user_query": "Follow-up query",
+            "intent_type": "KNOWLEDGE_ONLY",
+            "final_response": "Subsequent success",
+            "status": "SUCCESS",
+        }
+        res_subsequent = self.client.post("/api/v1/chat", json={"query": "Follow-up query"})
+        self.assertEqual(res_subsequent.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_subsequent.json()["answer"], "Subsequent success")
+        self.assertEqual(sem._value, 1)
+
+    @patch("src.api.main.get_db_connection")
+    def test_15_health_and_ready_responsive_during_inference_overload(self, mock_get_conn):
+        """Verify /health and /ready remain responsive when inference capacity is fully occupied."""
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.fetchall.return_value = [("postgis",), ("vector",)]
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_get_conn.return_value = mock_conn
+
+        sem = self.app.state.inference_semaphore
+        sem._value = 0  # Inference capacity occupied
+        try:
+            # /health must respond with 200
+            res_health = self.client.get("/health")
+            self.assertEqual(res_health.status_code, status.HTTP_200_OK)
+            self.assertEqual(res_health.json()["status"], "healthy")
+
+            # /ready must respond with 200
+            res_ready = self.client.get("/ready")
+            self.assertEqual(res_ready.status_code, status.HTTP_200_OK)
+            self.assertEqual(res_ready.json()["status"], "ready")
+
+            # But /api/v1/chat must be rejected with 429
+            res_chat = self.client.post("/api/v1/chat", json={"query": "Are you busy?"})
+            self.assertEqual(res_chat.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        finally:
+            sem._value = 1
+
+    def test_16_query_length_validation_with_configured_limit(self):
+        """Verify queries exceeding config.max_query_length are rejected with HTTP 400."""
+        custom_config = Config(max_query_length=50)
+        custom_app = create_app(config=custom_config)
+        custom_app.state.orchestrator = self.mock_orchestrator
+        custom_app.state.config = custom_config
+        custom_client = TestClient(custom_app)
+
+        oversized_for_config = "A" * 60
+        res = custom_client.post("/api/v1/chat", json={"query": oversized_for_config})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("exceeds the maximum allowed limit of 50", res.json()["message"])
+
+
 if __name__ == "__main__":
     unittest.main()

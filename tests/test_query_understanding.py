@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 # Ensure src is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from pydantic import ValidationError
 from src.agents.query_understanding import (
     AggregationOp,
     ComparisonTarget,
@@ -314,6 +315,60 @@ class TestQueryUnderstandingAgent(unittest.TestCase):
         with self.assertRaises(LLMStructuredOutputError) as ctx:
             self.agent.analyze("Get salinity data")
         self.assertIn("JSON validation failed", str(ctx.exception))
+
+
+    # ===================================================================
+    # 6. WMO IDs Validation & Null Coercion Tests (DEF-E5-02)
+    # ===================================================================
+
+    def test_23_wmo_ids_missing_defaults_to_empty_list(self):
+        """Verify omitting wmo_ids defaults to an empty list."""
+        intent = QueryIntent()
+        self.assertEqual(intent.wmo_ids, [])
+        self.assertIsInstance(intent.wmo_ids, list)
+
+        # Also verify when constructed from dict without wmo_ids
+        intent_from_dict = QueryIntent.model_validate({"intent_type": "DATA_ONLY"})
+        self.assertEqual(intent_from_dict.wmo_ids, [])
+
+    def test_24_wmo_ids_explicit_null_coerced_to_empty_list(self):
+        """Verify explicit null/None for wmo_ids is cleanly coerced into an empty list."""
+        intent_direct = QueryIntent(wmo_ids=None)
+        self.assertEqual(intent_direct.wmo_ids, [])
+        self.assertIsInstance(intent_direct.wmo_ids, list)
+
+        # Verify JSON/dict deserialization with explicit null (simulating local LLM output)
+        intent_from_json = QueryIntent.model_validate({
+            "intent_type": "DATA_ONLY",
+            "intent_category": "filtering",
+            "wmo_ids": None,
+        })
+        self.assertEqual(intent_from_json.wmo_ids, [])
+        self.assertIsInstance(intent_from_json.wmo_ids, list)
+
+    def test_25_wmo_ids_valid_platform_list_preserved(self):
+        """Verify valid list of platform identifiers is preserved exactly."""
+        valid_ids = ["2901333", "1902672", "4903783"]
+        intent = QueryIntent(wmo_ids=valid_ids)
+        self.assertEqual(intent.wmo_ids, valid_ids)
+
+        intent_from_dict = QueryIntent.model_validate({
+            "intent_type": "DATA_ONLY",
+            "wmo_ids": ["2902093"],
+        })
+        self.assertEqual(intent_from_dict.wmo_ids, ["2902093"])
+
+    def test_26_wmo_ids_invalid_type_rejected(self):
+        """Verify non-list / invalid types are not silently converted and raise ValidationError."""
+        # Non-iterable numeric type
+        with self.assertRaises(ValidationError) as ctx:
+            QueryIntent(wmo_ids=12345)
+        self.assertIn("wmo_ids", str(ctx.exception))
+
+        # Dict type
+        with self.assertRaises(ValidationError) as ctx:
+            QueryIntent.model_validate({"wmo_ids": {"id": "2901333"}})
+        self.assertIn("wmo_ids", str(ctx.exception))
 
 
 if __name__ == "__main__":

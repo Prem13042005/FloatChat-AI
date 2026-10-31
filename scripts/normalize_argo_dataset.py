@@ -88,8 +88,21 @@ def load_and_normalize_netcdf(nc_path: str) -> pd.DataFrame:
     # 5. TEMP Normalization (99999.0 / Masked -> NaN / NULL)
     temp_clean = extract_numeric_var(ds.variables["TEMP"]).astype(np.float32)
 
-    # 6. PSAL Normalization (99999.0 / Masked -> NaN / NULL)
-    psal_clean = extract_numeric_var(ds.variables["PSAL"]).astype(np.float32)
+    # 6. Salinity Normalization (PSAL or PSAL_ADJUSTED -> salinity_psu)
+    # 99999.0 / Masked -> NaN / NULL
+    salinity_source_var = None
+    if "PSAL_ADJUSTED" in ds.variables:
+        salinity_source_var = "PSAL_ADJUSTED"
+        psal_clean = extract_numeric_var(ds.variables["PSAL_ADJUSTED"]).astype(np.float32)
+    elif "PSAL" in ds.variables:
+        salinity_source_var = "PSAL"
+        psal_clean = extract_numeric_var(ds.variables["PSAL"]).astype(np.float32)
+    else:
+        logger.warning("Neither PSAL nor PSAL_ADJUSTED found in dataset. Populating salinity_psu as all NaN.")
+        salinity_source_var = "NONE"
+        psal_clean = np.full(len(platforms), np.nan, dtype=np.float32)
+
+    logger.info(f"Salinity normalization: Selected source variable '{salinity_source_var}' -> mapped to canonical 'salinity_psu'")
 
     ds.close()
 
@@ -102,16 +115,39 @@ def load_and_normalize_netcdf(nc_path: str) -> pd.DataFrame:
         "temperature_c": temp_clean,
         "salinity_psu": psal_clean
     })
+    df.attrs["salinity_source_variable"] = salinity_source_var
 
     logger.info(f"Successfully loaded and normalized {len(df):,} observation records from NetCDF.")
     return df
 
-def run_pipeline(nc_path: str, output_dir: str) -> dict:
+def run_pipeline(
+    nc_path: str,
+    output_dir: str,
+    id_start_offset: int = 0,
+    reference_dir: str = None
+) -> dict:
     """
     Executes complete ingestion, normalization, validation, and output generation pipeline.
+    Supports incremental imports with collision-safe measurement_id offsets.
     """
     os.makedirs(output_dir, exist_ok=True)
     logger.info(f"Output directory initialized: {os.path.abspath(output_dir)}")
+
+    # Resolve measurement ID start offset and verify against reference dataset if available
+    resolved_offset = id_start_offset
+    ref_meas_path = os.path.join(reference_dir, "measurements.parquet") if reference_dir else None
+
+    if ref_meas_path and os.path.exists(ref_meas_path):
+        ref_df = pd.read_parquet(ref_meas_path, columns=["measurement_id"])
+        max_existing_id = int(ref_df["measurement_id"].max()) if len(ref_df) > 0 else 0
+        if resolved_offset == 0 and os.path.abspath(output_dir) != os.path.abspath(reference_dir):
+            resolved_offset = max_existing_id
+            logger.info(f"Auto-detected ID offset from reference dataset ({ref_meas_path}): start offset = {resolved_offset}")
+        elif resolved_offset < max_existing_id and os.path.abspath(output_dir) != os.path.abspath(reference_dir):
+            raise ValueError(
+                f"Measurement ID Collision Risk: Specified offset {resolved_offset} is less than "
+                f"maximum existing measurement ID {max_existing_id} in reference dataset."
+            )
 
     # 1. Load and Normalize Raw NetCDF Data
     raw_df = load_and_normalize_netcdf(nc_path)
@@ -161,7 +197,7 @@ def run_pipeline(nc_path: str, output_dir: str) -> dict:
     for idx, row in raw_df.iterrows():
         p_id = profile_id_map[(row["platform_number"], row["profile_time"])]
         measurements_list.append({
-            "measurement_id": int(idx + 1),
+            "measurement_id": int(resolved_offset + idx + 1),
             "profile_id": p_id,
             "pressure_dbar": row["pressure_dbar"] if pd.notna(row["pressure_dbar"]) else None,
             "temperature_c": row["temperature_c"] if pd.notna(row["temperature_c"]) else None,
@@ -199,6 +235,12 @@ def run_pipeline(nc_path: str, output_dir: str) -> dict:
         "output_measurement_count": output_measurement_count,
         "unique_platform_count": unique_platform_count,
         "unique_profile_count": unique_profile_count,
+        "salinity_source_variable": raw_df.attrs.get("salinity_source_variable", "UNKNOWN"),
+        "measurement_id_range": {
+            "start_offset": resolved_offset,
+            "min_id": int(measurements_df["measurement_id"].min()),
+            "max_id": int(measurements_df["measurement_id"].max())
+        },
         "missing_values": {
             "pressure": stats_val["pressure_summary"]["null_count"],
             "temperature": stats_val["temperature_summary"]["null_count"],
@@ -227,7 +269,12 @@ def run_pipeline(nc_path: str, output_dir: str) -> dict:
     return validation_report
 
 if __name__ == "__main__":
-    nc_input = sys.argv[1] if len(sys.argv) > 1 else "Indian_ARGO_Floats_0f9d_516d_c560_U1788882326310.nc"
-    out_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join("data", "processed")
-    
-    run_pipeline(nc_input, out_dir)
+    import argparse
+    parser = argparse.ArgumentParser(description="FloatChat ARGO Data Normalization & Ingestion Pipeline")
+    parser.add_argument("nc_input", nargs="?", default="Indian_ARGO_Floats_0f9d_516d_c560_U1788882326310.nc", help="Path to input NetCDF file")
+    parser.add_argument("output_dir", nargs="?", default=os.path.join("data", "processed"), help="Output directory for Parquet files")
+    parser.add_argument("--id-offset", type=int, default=0, help="Explicit measurement_id starting offset")
+    parser.add_argument("--reference-dir", type=str, default=os.path.join("data", "processed"), help="Reference directory to verify ID collision")
+
+    args = parser.parse_args()
+    run_pipeline(args.nc_input, args.output_dir, id_start_offset=args.id_offset, reference_dir=args.reference_dir)
