@@ -273,5 +273,217 @@ class TestSQLValidator(unittest.TestCase):
         self.assertIn("LIMIT 100", res.normalized_sql)
         self.assertEqual(len(res.warnings), 0)
 
+    # ===================================================================
+    # Category E: F11 Security Hardening Tests (CTEs & Limit Bypasses)
+    # ===================================================================
+
+    def test_38_reject_data_modifying_cte_delete(self):
+        sql = """
+            WITH deleted AS (
+                DELETE FROM argo_floats RETURNING platform_number
+            )
+            SELECT platform_number FROM deleted
+        """
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertIn(res.error_code, (ValidationErrorCode.UNSAFE_CONSTRUCT, ValidationErrorCode.NON_SELECT_STATEMENT))
+
+    def test_39_reject_data_modifying_cte_update(self):
+        sql = """
+            WITH updated AS (
+                UPDATE argo_measurements SET temperature_c = 0.0 RETURNING measurement_id
+            )
+            SELECT measurement_id FROM updated
+        """
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertIn(res.error_code, (ValidationErrorCode.UNSAFE_CONSTRUCT, ValidationErrorCode.NON_SELECT_STATEMENT))
+
+    def test_40_reject_data_modifying_cte_insert(self):
+        sql = """
+            WITH inserted AS (
+                INSERT INTO argo_floats (platform_number) VALUES ('9999999') RETURNING platform_number
+            )
+            SELECT platform_number FROM inserted
+        """
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertIn(res.error_code, (ValidationErrorCode.UNSAFE_CONSTRUCT, ValidationErrorCode.NON_SELECT_STATEMENT))
+
+    def test_41_limit_null_bypass_remediated(self):
+        sql = "SELECT platform_number FROM argo_floats LIMIT NULL"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+        self.assertIn("LIMIT 500", res.normalized_sql)
+        self.assertTrue(any("NULL" in w for w in res.warnings))
+
+    def test_42_negative_limit_remediated(self):
+        sql = "SELECT platform_number FROM argo_floats LIMIT -1"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+        self.assertIn("LIMIT 500", res.normalized_sql)
+        self.assertTrue(any("Negative" in w for w in res.warnings))
+
+    def test_43_fetch_first_excessive_capped(self):
+        sql = "SELECT platform_number FROM argo_floats FETCH FIRST 5000 ROWS ONLY"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+        self.assertIn("LIMIT 1000", res.normalized_sql)
+        self.assertTrue(any("exceeded" in w for w in res.warnings))
+
+    def test_44_fetch_first_valid_preserved(self):
+        sql = "SELECT platform_number FROM argo_floats FETCH FIRST 10 ROWS ONLY"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+        self.assertEqual(len(res.warnings), 0)
+
+    # ===================================================================
+    # Category F: Stage 8B Phase 1 Statistical Aggregates & Whitelist
+    # ===================================================================
+
+    def test_45_stddev_positive(self):
+        sql = "SELECT STDDEV(temperature_c) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+        self.assertIn("LIMIT 500", res.normalized_sql)
+
+    def test_46_stddev_samp_positive(self):
+        sql = "SELECT STDDEV_SAMP(temperature_c) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+
+    def test_47_stddev_pop_positive(self):
+        sql = "SELECT STDDEV_POP(temperature_c) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+
+    def test_48_variance_positive(self):
+        sql = "SELECT VARIANCE(salinity_psu) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+
+    def test_49_var_samp_positive(self):
+        sql = "SELECT VAR_SAMP(salinity_psu) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+
+    def test_50_var_pop_positive(self):
+        sql = "SELECT VAR_POP(salinity_psu) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+
+    def test_51_percentile_cont_median_positive(self):
+        sql = "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY temperature_c) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+        self.assertIn("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY temperature_c)", res.normalized_sql)
+
+    def test_52_percentile_cont_boundary_values_positive(self):
+        sql = "SELECT PERCENTILE_CONT(0.0) WITHIN GROUP (ORDER BY pressure_dbar), PERCENTILE_CONT(1.0) WITHIN GROUP (ORDER BY pressure_dbar) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+
+    def test_53_statistical_aggregates_with_group_by_positive(self):
+        sql = "SELECT profile_id, STDDEV(temperature_c), VARIANCE(salinity_psu) FROM argo_measurements GROUP BY profile_id"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+
+    def test_54_reject_unapproved_statistical_function(self):
+        sql = "SELECT MEDIAN(temperature_c) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.error_code, ValidationErrorCode.UNSAFE_FUNCTION)
+
+    def test_55_reject_unsafe_function_nested_in_stddev(self):
+        sql = "SELECT STDDEV(pg_sleep(5)) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.error_code, ValidationErrorCode.UNSAFE_FUNCTION)
+
+    def test_56_reject_percentile_cont_out_of_bounds_high(self):
+        sql = "SELECT PERCENTILE_CONT(1.5) WITHIN GROUP (ORDER BY temperature_c) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.error_code, ValidationErrorCode.UNSAFE_CONSTRUCT)
+        self.assertTrue(any("out of bounds" in e for e in res.errors))
+
+    def test_57_reject_percentile_cont_out_of_bounds_negative(self):
+        sql = "SELECT PERCENTILE_CONT(-0.1) WITHIN GROUP (ORDER BY temperature_c) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.error_code, ValidationErrorCode.UNSAFE_CONSTRUCT)
+        self.assertTrue(any("out of bounds" in e for e in res.errors))
+
+    def test_58_reject_percentile_cont_non_numeric_argument(self):
+        sql = "SELECT PERCENTILE_CONT('invalid') WITHIN GROUP (ORDER BY temperature_c) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.error_code, ValidationErrorCode.UNSAFE_CONSTRUCT)
+        self.assertTrue(any("constant numeric literal" in e for e in res.errors))
+
+    def test_59_reject_percentile_cont_without_within_group(self):
+        sql = "SELECT PERCENTILE_CONT(0.5) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.error_code, ValidationErrorCode.UNSAFE_CONSTRUCT)
+        self.assertTrue(any("WITHIN GROUP" in e for e in res.errors))
+
+    def test_60_reject_within_group_with_unauthorized_aggregate(self):
+        sql = "SELECT AVG(temperature_c) WITHIN GROUP (ORDER BY temperature_c) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.error_code, ValidationErrorCode.UNSAFE_CONSTRUCT)
+        self.assertTrue(any("Only PERCENTILE_CONT is permitted" in e for e in res.errors))
+
+    def test_61_reject_percentile_cont_multiple_order_by_columns(self):
+        sql = "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY temperature_c, salinity_psu) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.error_code, ValidationErrorCode.UNSAFE_CONSTRUCT)
+        self.assertTrue(any("exactly one sort expression" in e for e in res.errors))
+
+    def test_62_reject_percentile_cont_unauthorized_column_in_order_by(self):
+        sql = "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY secret_col) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.error_code, ValidationErrorCode.UNAUTHORIZED_COLUMN)
+
+    def test_63_reject_window_functions_lag(self):
+        sql = "SELECT LAG(temperature_c) OVER (ORDER BY pressure_dbar) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertIn(res.error_code, (ValidationErrorCode.UNSAFE_FUNCTION, ValidationErrorCode.UNSAFE_CONSTRUCT))
+
+    def test_64_reject_window_functions_lead(self):
+        sql = "SELECT LEAD(temperature_c) OVER (ORDER BY pressure_dbar) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertIn(res.error_code, (ValidationErrorCode.UNSAFE_FUNCTION, ValidationErrorCode.UNSAFE_CONSTRUCT))
+
+    def test_65_reject_window_over_clause_on_standard_aggregate(self):
+        sql = "SELECT AVG(temperature_c) OVER (PARTITION BY profile_id) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.error_code, ValidationErrorCode.UNSAFE_CONSTRUCT)
+
+    def test_66_reject_non_select_statement_with_stddev(self):
+        sql = "UPDATE argo_measurements SET temperature_c = STDDEV(temperature_c)"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.error_code, ValidationErrorCode.NON_SELECT_STATEMENT)
+
+    def test_67_reject_multiple_statements_with_statistical_function(self):
+        sql = "SELECT STDDEV(temperature_c) FROM argo_measurements; DROP TABLE argo_measurements;"
+        res = self.validator.validate(sql)
+        self.assertFalse(res.valid)
+        self.assertEqual(res.error_code, ValidationErrorCode.MULTIPLE_STATEMENTS)
+
+    def test_68_limit_enforced_on_statistical_queries(self):
+        sql = "SELECT STDDEV(temperature_c) FROM argo_measurements"
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid)
+        self.assertIn("LIMIT 500", res.normalized_sql)
+        self.assertTrue(len(res.warnings) > 0)
+
 if __name__ == "__main__":
     unittest.main()

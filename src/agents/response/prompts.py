@@ -12,7 +12,7 @@ Defines system instructions and prompt builders that enforce:
 import json
 from typing import Any, Dict, List, Optional
 
-from src.agents.query_understanding.models import QueryIntent
+from src.agents.query_understanding.models import IntentType, QueryIntent
 from src.agents.response.models import DataSummary, VisualizationSpec
 from src.database.models import DatabaseExecutionResult
 from src.rag.models import RetrievedChunk
@@ -146,8 +146,14 @@ def build_response_user_prompt(
         )
 
     # 6. Final Grounding Instruction
-    sections.append(
-        "Synthesize an evidence-grounded response now. Remember: do not fabricate citations or observations."
-    )
+    if intent and intent.intent_type == IntentType.HYBRID:
+        sections.append(
+            "IMPORTANT: This is a HYBRID question. Your response MUST address BOTH parts of the user question: "
+            "(1) the observational database findings, AND (2) the scientific explanation grounded in the retrieved passages with inline citations."
+        )
+    else:
+        sections.append(
+            "Synthesize an evidence-grounded response now. Remember: do not fabricate citations or observations."
+        )
 
     return "\n\n".join(sections)

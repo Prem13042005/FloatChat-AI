@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import Navbar from "../components/Navbar";
 import {
   getUsers,
   updateUserRole,
@@ -51,61 +50,64 @@ export default function UserManagement() {
   }
 
   return (
-    <>
-      <Navbar />
+    <main className="dashboard-page">
+      <span className="eyebrow">ADMINISTRATION</span>
+      <h1>User Management</h1>
+      <p>Manage accounts permitted by your administrator role.</p>
 
-      <main className="dashboard-page">
-        <span className="eyebrow">ADMINISTRATION</span>
-        <h1>User Management</h1>
-        <p>Manage accounts permitted by your administrator role.</p>
+      {loading && <p>Loading users...</p>}
+      {error && <p className="error-message">{error}</p>}
 
-        {loading && <p>Loading users...</p>}
-        {error && <p className="error-message">{error}</p>}
+      {!loading && !error && users.length === 0 && (
+        <section className="notice-panel">
+          <h2>No user accounts found</h2>
+          <p>There are currently no managed user accounts registered in the system.</p>
+        </section>
+      )}
 
-        {!loading && users.length > 0 && (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Email</th>
-                  <th>Role</th>
-                  <th>Status</th>
-                  <th>Actions</th>
+      {!loading && users.length > 0 && (
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {users.map((user) => (
+                <tr key={user.id}>
+                  <td>{user.name}</td>
+                  <td>{user.email}</td>
+                  <td>
+                    <select
+                      value={user.role}
+                      onChange={(e) => changeRole(user, e.target.value)}
+                    >
+                      <option value="USER">USER</option>
+                      <option value="ADMIN">ADMIN</option>
+                      <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+                    </select>
+                  </td>
+                  <td>{user.enabled ? "Active" : "Disabled"}</td>
+                  <td>
+                    <button
+                      className="button button-outline"
+                      onClick={() => toggleStatus(user)}
+                    >
+                      {user.enabled ? "Disable" : "Enable"}
+                    </button>
+                  </td>
                 </tr>
-              </thead>
-
-              <tbody>
-                {users.map((user) => (
-                  <tr key={user.id}>
-                    <td>{user.name}</td>
-                    <td>{user.email}</td>
-                    <td>
-                      <select
-                        value={user.role}
-                        onChange={(e) => changeRole(user, e.target.value)}
-                      >
-                        <option value="USER">USER</option>
-                        <option value="ADMIN">ADMIN</option>
-                        <option value="SUPER_ADMIN">SUPER_ADMIN</option>
-                      </select>
-                    </td>
-                    <td>{user.enabled ? "Active" : "Disabled"}</td>
-                    <td>
-                      <button
-                        className="button button-outline"
-                        onClick={() => toggleStatus(user)}
-                      >
-                        {user.enabled ? "Disable" : "Enable"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </main>
-    </>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </main>
   );
 }

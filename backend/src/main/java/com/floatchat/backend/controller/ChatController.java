@@ -32,6 +32,14 @@ public class ChatController {
         return chatService.conversations(authentication.getName());
     }
 
+    @GetMapping("/conversations/{id}")
+    public ChatDtos.ConversationDetailResponse getConversation(
+        Authentication authentication,
+        @PathVariable Long id
+    ) {
+        return chatService.getConversation(authentication.getName(), id);
+    }
+
     @DeleteMapping("/conversations/{id}")
     public void deleteConversation(
         Authentication authentication,

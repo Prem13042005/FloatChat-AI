@@ -14,6 +14,7 @@ Enforces:
 """
 
 import logging
+import time
 from typing import List, Optional
 
 from src.config import Config, get_config
@@ -62,6 +63,7 @@ class ScientificDocumentRetriever:
                 model=self.config.embedding_model or "nomic-embed-text",
                 dimension=self.config.expected_embedding_dimension or 768,
                 timeout_seconds=self.config.ollama_timeout_seconds or 30.0,
+                keep_alive=getattr(self.config, "ollama_embedding_keep_alive", "5m"),
             )
 
     def retrieve(
@@ -93,6 +95,8 @@ class ScientificDocumentRetriever:
             if similarity_threshold is not None
             else self.config.vector_similarity_threshold
         )
+
+        t0 = time.perf_counter()
 
         # 1. Validate query string
         if not query or not query.strip():
@@ -162,13 +166,21 @@ class ScientificDocumentRetriever:
             )
 
         # 4. Execute vector similarity search
-        return self.retrieve_by_vector(
+        result = self.retrieve_by_vector(
             query_vector=query_vector,
             query_text=query,
             top_k=actual_top_k,
             similarity_threshold=actual_threshold,
             raise_on_error=raise_on_error,
         )
+        total_retrieval_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        logger.info(
+            "Scientific document retrieval completed in %.2fms [chunks=%d, status=%s]",
+            total_retrieval_ms,
+            len(result.chunks),
+            result.status,
+        )
+        return result
 
     def retrieve_by_vector(
         self,

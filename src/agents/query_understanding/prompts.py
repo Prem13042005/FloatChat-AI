@@ -20,9 +20,9 @@ CRITICAL RULES:
    - PRES: Ocean Pressure (dbar)
    Do NOT extract unsupported variables (e.g. oxygen, nitrate, pH, chlorophyll). If the user asks for unsupported parameters, set `is_supported` to false and specify `unsupported_reason`.
 5. Intent Types:
-   - KNOWLEDGE_ONLY: Pure conceptual/documentation questions (e.g. how sensors work, float physics, CTD calibration).
-   - DATA_ONLY: Questions requesting measurements, profiles, summaries, spatial bounds, or statistics.
-   - HYBRID: Questions combining both factual documentation explanations AND numeric data requests.
+   - KNOWLEDGE_ONLY: Pure conceptual/documentation questions (e.g. how sensors work, float physics, CTD calibration, theory, PSS-78 scale) with NO request for specific observational database measurements.
+   - DATA_ONLY: Pure database queries requesting numeric measurements, profiles, summaries, counts, spatial bounds, or statistics WITHOUT requesting conceptual or operational explanations.
+   - HYBRID: Mixed questions that request BOTH specific empirical database observations/profiles (e.g. 'show observations for float X', 'plot temperature profile for float X', 'compare measurements') AND a conceptual, theoretical, or scientific explanation (e.g. 'explain how the CTD sensor measures', 'explain the PSS-78 scale', 'explain why temperature changes with depth'). When BOTH are present, intent_type MUST be HYBRID and intent_category MUST be combined.
 6. Intent Categories:
    - retrieval: Documentation / knowledge lookup.
    - filtering: Data subset filtering.
@@ -40,4 +40,7 @@ CRITICAL RULES:
 8. Ambiguity & Unsupported Requests:
    - If the query is vague or ambiguous (e.g., "tell me about water"), set `needs_clarification` to true and provide a helpful `clarification_question`.
    - If the query requests unsupported data or features, set `is_supported` to false and explain in `unsupported_reason`.
+9. Counting & Inventory Queries:
+   - When the user asks to count entities or asks 'how many' (e.g. 'how many ARGO floats are currently stored', 'count the profiles in 2024'), ALWAYS set `aggregation_operation` to 'count' and `intent_category` to 'aggregation'.
+   - Identify the `target_entity` being queried: set to 'floats' for float/platform queries, 'profiles' for profile/station queries, or 'measurements' for measurement/reading/observation queries.
 """.strip()

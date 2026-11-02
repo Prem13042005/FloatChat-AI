@@ -7,12 +7,16 @@ Defaults to nomic-embed-text (dimension: 768).
 """
 
 import json
+import logging
+import time
 from typing import List, Optional
 import urllib.request
 import urllib.error
 
 from src.rag.embeddings.base import BaseEmbeddingProvider
 from src.rag.exceptions import EmbeddingGenerationError
+
+logger = logging.getLogger("floatchat.rag.embeddings.ollama")
 
 DEFAULT_OLLAMA_EMBEDDING_MODEL = "nomic-embed-text"
 DEFAULT_OLLAMA_DIMENSION = 768
@@ -29,6 +33,7 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
         model: str = DEFAULT_OLLAMA_EMBEDDING_MODEL,
         dimension: int = DEFAULT_OLLAMA_DIMENSION,
         timeout_seconds: float = 30.0,
+        keep_alive: Optional[str] = "5m",
     ):
         """
         Initializes the OllamaEmbeddingProvider.
@@ -38,11 +43,13 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
             model: Embedding model name (e.g. 'nomic-embed-text').
             dimension: Expected embedding dimension (768 for nomic-embed-text).
             timeout_seconds: Network request timeout in seconds.
+            keep_alive: Model residency keep_alive duration (e.g. '5m').
         """
         self.base_url = base_url.rstrip("/")
         self._model = model
         self._dimension = dimension
         self.timeout_seconds = timeout_seconds
+        self.keep_alive = keep_alive
 
     @property
     def dimension(self) -> int:
@@ -64,7 +71,10 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
             "model": self._model,
             "prompt": text.strip(),
         }
+        if self.keep_alive:
+            payload["keep_alive"] = self.keep_alive
 
+        t0 = time.perf_counter()
         try:
             req = urllib.request.Request(
                 endpoint,
@@ -88,6 +98,13 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
 
             # Validate vector structure and dimension
             self.validate_vector(raw_embedding, label=f"Ollama ({self._model})")
+            duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            logger.info(
+                "Ollama embedding generated [model=%s, dim=%d, duration=%.2fms]",
+                self._model,
+                len(raw_embedding),
+                duration_ms,
+            )
             return [float(x) for x in raw_embedding]
 
         except urllib.error.URLError as e:

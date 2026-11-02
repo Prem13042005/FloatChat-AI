@@ -54,8 +54,20 @@ public final class ChatDtos {
         String title,
         Boolean invertY,
         String seriesColumn,
-        String description
+        String description,
+        List<java.util.Map<String, Object>> data
     ) {
+        public VisualizationSpecDto(
+            String chartType,
+            String xAxis,
+            String yAxis,
+            String title,
+            Boolean invertY,
+            String seriesColumn,
+            String description
+        ) {
+            this(chartType, xAxis, yAxis, title, invertY, seriesColumn, description, List.of());
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -111,6 +123,41 @@ public final class ChatDtos {
         String question,
         String answer,
         LocalDateTime createdAt
+    ) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record MessageDto(
+        String role,
+        String content,
+        LocalDateTime createdAt,
+        VisualizationSpecDto visualizationSpec
+    ) {
+        public MessageDto(
+            String role,
+            String content,
+            LocalDateTime createdAt
+        ) {
+            this(role, content, createdAt, null);
+        }
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ConversationDetailResponse(
+        Long id,
+        String title,
+        LocalDateTime createdAt,
+        LocalDateTime updatedAt,
+        List<MessageDto> messages
+    ) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record VisualizationGalleryItemDto(
+        Long id,
+        String question,
+        LocalDateTime createdAt,
+        VisualizationSpecDto visualizationSpec
     ) {
     }
 }

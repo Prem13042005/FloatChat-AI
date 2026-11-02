@@ -303,14 +303,15 @@ class AuthenticationAndPersistenceIntegrationTests {
     }
 
     @Test
-    @DisplayName("6. Health endpoints require authentication under default security configuration")
+    @DisplayName("6. Health endpoints permit unauthenticated access under hardened security configuration")
     void testHealthEndpointAuthorizationBehavior() throws Exception {
-        // 1. Unauthenticated health check should be rejected with 403 Forbidden under current SecurityConfig
+        // 1. Unauthenticated health checks succeed with 200 OK under hardened SecurityConfig
         mockMvc.perform(get("/api/v1/health"))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
 
         mockMvc.perform(get("/api/v1/ai/status"))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isOk());
 
         // 2. Register Alice and obtain valid token
         MvcResult signupResult = mockMvc.perform(post("/api/v1/auth/signup")

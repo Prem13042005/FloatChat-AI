@@ -13,6 +13,7 @@ from src.agents.data_query.models import DataQueryResult
 from src.agents.query_understanding.models import QueryIntent
 from src.agents.response.models import ScientificResponse
 from src.database.models import DatabaseExecutionResult
+from src.rag.models import RetrievedChunk
 
 
 class FloatChatState(TypedDict, total=False):
@@ -26,6 +27,7 @@ class FloatChatState(TypedDict, total=False):
     # -------------------------------------------------------------------
     user_query: str
     session_id: Optional[str]
+    cancellation_token: Optional[Any]
 
     # -------------------------------------------------------------------
     # 2. Agent 1: Query Understanding Outputs
@@ -50,6 +52,12 @@ class FloatChatState(TypedDict, total=False):
     db_row_count: Optional[int]
     db_execution_time_ms: Optional[float]
     db_error_message: Optional[str]
+
+    # -------------------------------------------------------------------
+    # 3b. Scientific Document Retrieval Outputs
+    # -------------------------------------------------------------------
+    retrieved_chunks: Optional[List[RetrievedChunk]]
+    retrieval_warnings: Optional[List[str]]
 
     # -------------------------------------------------------------------
     # 4. Agent 3: Scientific Knowledge & Response Agent Outputs

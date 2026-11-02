@@ -168,4 +168,120 @@ class ChatTransactionAndPersistenceTests {
         )).isInstanceOf(ResponseStatusException.class)
           .satisfies(ex -> assertThat(((ResponseStatusException) ex).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND));
     }
+
+    @Test
+    @DisplayName("getConversation returns messages in strict chronological order")
+    void testGetConversationChronologicalOrdering() {
+        Long convId = chatPersistenceService.getOrCreateConversation(
+            USER_ALICE, null, "Ocean salinity exploration"
+        );
+
+        chatPersistenceService.saveQueryResult(
+            USER_ALICE, convId, "What is salinity?", "Salinity is salt concentration."
+        );
+        chatPersistenceService.saveQueryResult(
+            USER_ALICE, convId, "What is the thermocline?", "The thermocline is a steep temperature gradient."
+        );
+
+        ChatService chatService = new ChatService(
+            (q, s) -> new AiProvider.AiAnswer("ans", false, null, List.of()),
+            chatPersistenceService,
+            conversationRepository,
+            queryHistoryRepository
+        );
+
+        ChatDtos.ConversationDetailResponse detail = chatService.getConversation(USER_ALICE, convId);
+
+        assertThat(detail).isNotNull();
+        assertThat(detail.id()).isEqualTo(convId);
+        assertThat(detail.title()).isEqualTo("Ocean salinity exploration");
+        assertThat(detail.messages()).hasSize(4);
+
+        assertThat(detail.messages().get(0).role()).isEqualTo("user");
+        assertThat(detail.messages().get(0).content()).isEqualTo("What is salinity?");
+
+        assertThat(detail.messages().get(1).role()).isEqualTo("assistant");
+        assertThat(detail.messages().get(1).content()).isEqualTo("Salinity is salt concentration.");
+
+        assertThat(detail.messages().get(2).role()).isEqualTo("user");
+        assertThat(detail.messages().get(2).content()).isEqualTo("What is the thermocline?");
+
+        assertThat(detail.messages().get(3).role()).isEqualTo("assistant");
+        assertThat(detail.messages().get(3).content()).isEqualTo("The thermocline is a steep temperature gradient.");
+    }
+
+    @Test
+    @DisplayName("getConversation on empty conversation returns empty message list")
+    void testGetConversationEmptyReturnsEmptyMessageList() {
+        Long convId = chatPersistenceService.getOrCreateConversation(
+            USER_ALICE, null, "Empty session"
+        );
+
+        ChatService chatService = new ChatService(
+            (q, s) -> new AiProvider.AiAnswer("ans", false, null, List.of()),
+            chatPersistenceService,
+            conversationRepository,
+            queryHistoryRepository
+        );
+
+        ChatDtos.ConversationDetailResponse detail = chatService.getConversation(USER_ALICE, convId);
+
+        assertThat(detail).isNotNull();
+        assertThat(detail.id()).isEqualTo(convId);
+        assertThat(detail.title()).isEqualTo("Empty session");
+        assertThat(detail.messages()).isNotNull();
+        assertThat(detail.messages()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("getConversation for cross-user or nonexistent conversation returns 404")
+    void testGetConversationCrossUserReturnsNotFound() {
+        Long aliceConvId = chatPersistenceService.getOrCreateConversation(
+            USER_ALICE, null, "Alice private thread"
+        );
+
+        ChatService chatService = new ChatService(
+            (q, s) -> new AiProvider.AiAnswer("ans", false, null, List.of()),
+            chatPersistenceService,
+            conversationRepository,
+            queryHistoryRepository
+        );
+
+        // Bob tries to read Alice's conversation
+        assertThatThrownBy(() -> chatService.getConversation(USER_BOB, aliceConvId))
+            .isInstanceOf(ResponseStatusException.class)
+            .satisfies(ex -> assertThat(((ResponseStatusException) ex).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND));
+
+        // Non-existent ID returns 404
+        assertThatThrownBy(() -> chatService.getConversation(USER_ALICE, 99999999L))
+            .isInstanceOf(ResponseStatusException.class)
+            .satisfies(ex -> assertThat(((ResponseStatusException) ex).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND));
+    }
+
+    @Test
+    @DisplayName("deleteConversation cleans up associated QueryHistory and deletes conversation")
+    void testDeleteConversationCascadesQueryHistory() {
+        Long convId = chatPersistenceService.getOrCreateConversation(
+            USER_ALICE, null, "To be deleted"
+        );
+        chatPersistenceService.saveQueryResult(
+            USER_ALICE, convId, "Delete me?", "Yes, deleting."
+        );
+
+        ChatService chatService = new ChatService(
+            (q, s) -> new AiProvider.AiAnswer("ans", false, null, List.of()),
+            chatPersistenceService,
+            conversationRepository,
+            queryHistoryRepository
+        );
+
+        chatService.deleteConversation(USER_ALICE, convId);
+
+        // Conversation should be gone
+        assertThat(conversationRepository.findById(convId)).isEmpty();
+
+        // Query history for that conversation should be gone
+        List<QueryHistory> remaining = queryHistoryRepository.findByConversation_IdAndUser_EmailOrderByCreatedAtAsc(convId, USER_ALICE);
+        assertThat(remaining).isEmpty();
+    }
 }

@@ -149,6 +149,22 @@ class QueryIntent(BaseModel):
         description="List of targeted float platform WMO identification numbers"
     )
 
+    @field_validator("aggregation_operation", mode="before")
+    @classmethod
+    def coerce_aggregation_operation(cls, v: Any) -> Any:
+        """
+        Coerces explicit null, None, 'null', 'none', and empty/whitespace strings
+        into Python None, preserving valid AggregationOp enum values or valid string names.
+        """
+        if v is None:
+            return None
+        if isinstance(v, str):
+            cleaned = v.strip().lower()
+            if cleaned in ("", "null", "none"):
+                return None
+            return cleaned
+        return v
+
     @field_validator("wmo_ids", mode="before")
     @classmethod
     def coerce_null_wmo_ids(cls, v: Any) -> Any:
@@ -162,6 +178,10 @@ class QueryIntent(BaseModel):
     comparison_target: Optional[ComparisonTarget] = Field(
         default=None,
         description="Comparison targets and properties if query is a comparison"
+    )
+    target_entity: Optional[str] = Field(
+        default=None,
+        description="Target entity being queried or counted: 'floats', 'profiles', or 'measurements'"
     )
 
     # Status & Ambiguity Flags

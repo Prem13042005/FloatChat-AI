@@ -12,12 +12,13 @@ Coordinates the three primary AI agents into a stateful, direct acyclic graph wo
 Routing Optimization:
 - Flow 1 (KNOWLEDGE_ONLY): Routes directly to Response Agent; bypasses SQL generation and DB execution.
 - Flow 2 (DATA_ONLY): Routes to Data Query -> Database Execution -> Response Agent.
-- Flow 3 (HYBRID): Routes to Data Query -> Database Execution -> Response Agent (with internal RAG).
+- Flow 3 (HYBRID): Routes concurrently to Data Query and Document Retrieval branches -> joins at Response Agent.
 - Error Paths: Invalid intent or SQL validation failures route safely to Response Agent for graceful explanation.
 """
 
 import logging
-from typing import Any, Callable, Dict, Optional
+import time
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -31,7 +32,10 @@ from src.agents.response.models import ResponseStatus, ScientificResponse
 from src.config import Config, get_config
 from src.database.executor import ControlledDatabaseExecutor
 from src.database.models import DatabaseExecutionResult, ExecutionStatus
+from src.orchestration.cancellation import CancellationToken, WorkflowCancelledError
 from src.orchestration.state import FloatChatState
+from src.rag.models import RetrievalResult, RetrievedChunk
+from src.rag.retriever import ScientificDocumentRetriever
 
 logger = logging.getLogger("floatchat.orchestration.graph")
 
@@ -71,6 +75,7 @@ class FloatChatOrchestrator:
         data_agent: Optional[DataQueryAgent] = None,
         db_executor: Optional[ControlledDatabaseExecutor] = None,
         response_agent: Optional[ScientificResponseAgent] = None,
+        retriever: Optional[ScientificDocumentRetriever] = None,
         config: Optional[Config] = None,
     ):
         """
@@ -81,13 +86,19 @@ class FloatChatOrchestrator:
             data_agent: Optional DataQueryAgent instance.
             db_executor: Optional ControlledDatabaseExecutor instance.
             response_agent: Optional ScientificResponseAgent instance.
+            retriever: Optional ScientificDocumentRetriever instance.
             config: Optional Config instance.
         """
         self.config = config or get_config()
-        self.query_agent = query_agent or QueryUnderstandingAgent()
-        self.data_agent = data_agent or DataQueryAgent()
+        self.query_agent = query_agent or QueryUnderstandingAgent(config=self.config)
+        self.data_agent = data_agent or DataQueryAgent(config=self.config)
         self.db_executor = db_executor or ControlledDatabaseExecutor(config=self.config)
         self.response_agent = response_agent or ScientificResponseAgent(config=self.config)
+        self.retriever = (
+            retriever
+            or getattr(self.response_agent, "retriever", None)
+            or ScientificDocumentRetriever(config=self.config)
+        )
 
         self._graph: Optional[CompiledStateGraph] = None
 
@@ -95,15 +106,26 @@ class FloatChatOrchestrator:
     # Graph Node Implementations
     # ===================================================================
 
+    @staticmethod
+    def _check_cancellation(state: FloatChatState) -> None:
+        """Raises WorkflowCancelledError if cooperative cancellation has been signalled."""
+        token = state.get("cancellation_token")
+        if token is not None and hasattr(token, "raise_if_cancelled"):
+            token.raise_if_cancelled()
+
     def query_understanding_node(self, state: FloatChatState) -> Dict[str, Any]:
         """
         Node 1: Query Understanding.
         Extracts structured QueryIntent and slot constraints from raw natural language query.
         """
+        self._check_cancellation(state)
+        t0 = time.perf_counter()
         query = state.get("user_query", "").strip()
         logger.info(f"LangGraph [Node: query_understanding] Processing query: '{query[:80]}...'")
 
         if not query:
+            duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            logger.info("LangGraph [Node: query_understanding] Completed in %.2fms (empty query)", duration_ms)
             return {
                 "intent": None,
                 "intent_type": "ERROR",
@@ -112,16 +134,28 @@ class FloatChatOrchestrator:
             }
 
         try:
+            self._check_cancellation(state)
             intent: QueryIntent = self.query_agent.analyze(query)
+            self._check_cancellation(state)
             slots = _extract_slots(intent)
+            duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            logger.info(
+                "LangGraph [Node: query_understanding] Completed in %.2fms [intent_type=%s, category=%s]",
+                duration_ms,
+                intent.intent_type.value,
+                intent.intent_category.value,
+            )
             return {
                 "intent": intent,
                 "intent_type": intent.intent_type.value,
                 "extracted_slots": slots,
                 "query_understanding_error": None,
             }
+        except WorkflowCancelledError:
+            raise
         except Exception as e:
-            logger.warning(f"Query Understanding failed: {e}")
+            duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            logger.warning(f"Query Understanding failed in {duration_ms:.2f}ms: {e}")
             return {
                 "intent": None,
                 "intent_type": "ERROR",
@@ -134,6 +168,8 @@ class FloatChatOrchestrator:
         Node 2: Data Query Agent.
         Generates candidate SQL and validates deterministically via DeterministicSQLValidator.
         """
+        self._check_cancellation(state)
+        t0 = time.perf_counter()
         intent = state.get("intent")
         logger.info("LangGraph [Node: data_query] Generating and validating candidate SQL...")
 
@@ -147,6 +183,8 @@ class FloatChatOrchestrator:
                 status=ExecutionStatus.REJECTED_INPUT,
                 error_message=err_msg,
             )
+            duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            logger.info("LangGraph [Node: data_query] Completed in %.2fms (missing intent)", duration_ms)
             return {
                 "data_query_result": res,
                 "generated_sql": None,
@@ -156,7 +194,9 @@ class FloatChatOrchestrator:
                 "db_result": db_res,
             }
 
+        self._check_cancellation(state)
         data_query_result: DataQueryResult = self.data_agent.generate_sql(intent, raise_on_failure=False)
+        self._check_cancellation(state)
         sql_valid = (data_query_result.status == DataQueryStatus.SUCCESS)
 
         updates: Dict[str, Any] = {
@@ -179,6 +219,15 @@ class FloatChatOrchestrator:
                 error_message=data_query_result.error_message or f"SQL generation failed with status {data_query_result.status.value}",
             )
 
+        duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        logger.info(
+            "LangGraph [Node: data_query] Completed in %.2fms [status=%s, sql_valid=%s, retries=%d]",
+            duration_ms,
+            data_query_result.status.value,
+            sql_valid,
+            data_query_result.retry_count,
+        )
+
         return updates
 
     def database_execution_node(self, state: FloatChatState) -> Dict[str, Any]:
@@ -186,6 +235,8 @@ class FloatChatOrchestrator:
         Node 3: Controlled Database Execution Layer.
         Executes validated SQL against PostgreSQL with statement timeout and read-only transaction.
         """
+        self._check_cancellation(state)
+        t0 = time.perf_counter()
         dqr = state.get("data_query_result")
         logger.info("LangGraph [Node: database_execution] Executing validated query against database...")
 
@@ -195,6 +246,8 @@ class FloatChatOrchestrator:
                 status=ExecutionStatus.REJECTED_INPUT,
                 error_message=err_msg,
             )
+            duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            logger.info("LangGraph [Node: database_execution] Completed in %.2fms (not executable)", duration_ms)
             return {
                 "db_result": db_res,
                 "db_results": [],
@@ -204,7 +257,16 @@ class FloatChatOrchestrator:
                 "db_error_message": err_msg,
             }
 
+        self._check_cancellation(state)
         db_res: DatabaseExecutionResult = self.db_executor.execute(dqr, raise_on_failure=False)
+        self._check_cancellation(state)
+        duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        logger.info(
+            "LangGraph [Node: database_execution] Completed in %.2fms (db_engine=%.2fms, rows=%d)",
+            duration_ms,
+            db_res.execution_time_ms or 0.0,
+            db_res.row_count or 0,
+        )
 
         return {
             "db_result": db_res,
@@ -215,26 +277,108 @@ class FloatChatOrchestrator:
             "db_error_message": db_res.error_message,
         }
 
+    def document_retrieval_node(self, state: FloatChatState) -> Dict[str, Any]:
+        """
+        Retrieval Branch Node: Scientific Document Retrieval.
+        Retrieves relevant scientific literature from pgvector matching the user query.
+        Preserves query-cleaning behavior, existing retriever, and failure handling.
+        """
+        self._check_cancellation(state)
+        t0 = time.perf_counter()
+        query = state.get("user_query", "").strip()
+        logger.info(f"LangGraph [Node: document_retrieval] Retrieving scientific documentation for query: '{query[:80]}...'")
+
+        if not query:
+            duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            logger.info("LangGraph [Node: document_retrieval] Completed in %.2fms (empty query)", duration_ms)
+            return {
+                "retrieved_chunks": [],
+                "retrieval_warnings": ["User query string is empty."],
+            }
+
+        warnings: List[str] = []
+        retrieved_chunks: List[RetrievedChunk] = []
+
+        try:
+            self._check_cancellation(state)
+            retrieval_res: RetrievalResult = self.retriever.retrieve(
+                query=query,
+                raise_on_error=False,
+            )
+            self._check_cancellation(state)
+            if retrieval_res.has_results:
+                retrieved_chunks = retrieval_res.chunks
+            else:
+                msg = "No scientific documents met the similarity threshold."
+                warnings.append(msg)
+                if retrieval_res.warning:
+                    warnings.append(retrieval_res.warning)
+        except WorkflowCancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Scientific document retrieval error in graph node: {e}")
+            warnings.append(f"Document retrieval degraded: {str(e)}")
+
+        duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        logger.info(
+            "LangGraph [Node: document_retrieval] Completed in %.2fms [chunks=%d, warnings=%d]",
+            duration_ms,
+            len(retrieved_chunks),
+            len(warnings),
+        )
+
+        return {
+            "retrieved_chunks": retrieved_chunks,
+            "retrieval_warnings": warnings,
+        }
+
+    def join_node(self, state: FloatChatState) -> Dict[str, Any]:
+        """
+        Pass-through synchronization barrier node for HYBRID parallel fan-in.
+        """
+        self._check_cancellation(state)
+        return {}
+
     def scientific_response_node(self, state: FloatChatState) -> Dict[str, Any]:
         """
         Node 4: Scientific Knowledge & Response Agent.
         Synthesizes final grounded Markdown narrative, citations, data summaries, and chart specs.
         """
+        self._check_cancellation(state)
+        t0 = time.perf_counter()
         query = state.get("user_query", "")
         intent = state.get("intent")
         db_result = state.get("db_result")
+        pre_retrieved_chunks = state.get("retrieved_chunks")
+        pre_retrieval_warnings = state.get("retrieval_warnings")
 
         logger.info("LangGraph [Node: scientific_response] Synthesizing grounded response...")
 
-        resp: ScientificResponse = self.response_agent.respond(
-            query=query,
-            intent=intent,
-            db_result=db_result,
-        )
+        resp_kwargs: Dict[str, Any] = {
+            "query": query,
+            "intent": intent,
+            "db_result": db_result,
+        }
+        if pre_retrieved_chunks is not None:
+            resp_kwargs["pre_retrieved_chunks"] = pre_retrieved_chunks
+        if pre_retrieval_warnings is not None:
+            resp_kwargs["pre_retrieval_warnings"] = pre_retrieval_warnings
+
+        self._check_cancellation(state)
+        resp: ScientificResponse = self.response_agent.respond(**resp_kwargs)
+        self._check_cancellation(state)
 
         citations_data = [c.model_dump() for c in resp.citations]
         viz_spec_data = resp.visualization_spec.model_dump() if resp.visualization_spec else None
         data_summary_data = resp.data_summary.model_dump() if resp.data_summary else None
+
+        duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        logger.info(
+            "LangGraph [Node: scientific_response] Completed in %.2fms [status=%s, citations=%d]",
+            duration_ms,
+            resp.status.value,
+            len(resp.citations),
+        )
 
         return {
             "scientific_response": resp,
@@ -252,12 +396,12 @@ class FloatChatOrchestrator:
     # ===================================================================
 
     @staticmethod
-    def route_after_query_understanding(state: FloatChatState) -> str:
+    def route_after_query_understanding(state: FloatChatState) -> Union[str, List[str]]:
         """
         Conditional Edge 1: Routes based on QueryIntent.
-        - KNOWLEDGE_ONLY -> scientific_response (Flow 1: Bypasses SQL generation and database)
+        - KNOWLEDGE_ONLY -> document_retrieval (Flow 1: Bypasses SQL generation and database)
         - DATA_ONLY -> data_query (Flow 2)
-        - HYBRID -> data_query (Flow 3)
+        - HYBRID -> [data_query, document_retrieval] (Flow 3: Concurrent fan-out)
         - Invalid / Error -> scientific_response (Graceful error explanation)
         """
         intent = state.get("intent")
@@ -268,12 +412,16 @@ class FloatChatOrchestrator:
             return "scientific_response"
 
         if intent.intent_type == IntentType.KNOWLEDGE_ONLY:
-            logger.info("Routing -> scientific_response (Flow 1: KNOWLEDGE_ONLY bypasses SQL & DB)")
-            return "scientific_response"
+            logger.info("Routing -> document_retrieval (Flow 1: KNOWLEDGE_ONLY bypasses SQL & DB)")
+            return "document_retrieval"
 
-        if intent.intent_type in (IntentType.DATA_ONLY, IntentType.HYBRID):
-            logger.info(f"Routing -> data_query (Flow {2 if intent.intent_type == IntentType.DATA_ONLY else 3}: {intent.intent_type.value})")
+        if intent.intent_type == IntentType.DATA_ONLY:
+            logger.info(f"Routing -> data_query (Flow 2: {intent.intent_type.value})")
             return "data_query"
+
+        if intent.intent_type == IntentType.HYBRID:
+            logger.info("Routing -> [data_query, document_retrieval] (Flow 3: HYBRID concurrent fan-out)")
+            return ["data_query", "document_retrieval"]
 
         return "scientific_response"
 
@@ -282,15 +430,60 @@ class FloatChatOrchestrator:
         """
         Conditional Edge 2: Routes based on DataQuery validation outcome.
         - Valid & Executable SQL -> database_execution
-        - Invalid / Rejected SQL -> scientific_response (Bypasses DB execution to prevent execution errors)
+        - Invalid / Rejected SQL:
+          * In HYBRID -> join_node (to synchronize with concurrent document retrieval branch)
+          * In DATA_ONLY -> scientific_response (bypasses DB execution to prevent execution errors)
         """
         dqr = state.get("data_query_result")
+        intent = state.get("intent")
+        is_hybrid = intent is not None and intent.intent_type == IntentType.HYBRID
+
         if dqr is not None and dqr.status == DataQueryStatus.SUCCESS and dqr.is_executable:
             logger.info("Routing -> database_execution (SQL candidate validated and safe to execute)")
             return "database_execution"
 
+        if is_hybrid:
+            logger.info(f"Routing -> join_node (SQL not executable in HYBRID; status={getattr(dqr, 'status', 'None')})")
+            return "join_node"
+
         logger.info(f"Routing -> scientific_response (SQL not executable; status={getattr(dqr, 'status', 'None')})")
         return "scientific_response"
+
+    @staticmethod
+    def route_after_database_execution(state: FloatChatState) -> str:
+        """
+        Routes after database execution:
+        - In HYBRID -> join_node (to synchronize with concurrent document retrieval branch)
+        - In DATA_ONLY -> scientific_response
+        """
+        intent = state.get("intent")
+        if intent is not None and intent.intent_type == IntentType.HYBRID:
+            return "join_node"
+        return "scientific_response"
+
+    @staticmethod
+    def route_after_document_retrieval(state: FloatChatState) -> str:
+        """
+        Routes after document retrieval:
+        - In HYBRID -> join_node (to synchronize with concurrent data branch)
+        - In KNOWLEDGE_ONLY -> scientific_response
+        """
+        intent = state.get("intent")
+        if intent is not None and intent.intent_type == IntentType.HYBRID:
+            return "join_node"
+        return "scientific_response"
+
+    @staticmethod
+    def route_after_join(state: FloatChatState) -> str:
+        """
+        Synchronization barrier condition for HYBRID parallel fan-in.
+        Waits until both document retrieval and data branch (db_result) have produced outputs.
+        """
+        has_retrieval = state.get("retrieved_chunks") is not None
+        has_data = state.get("db_result") is not None
+        if has_retrieval and has_data:
+            return "scientific_response"
+        return "__wait__"
 
     # ===================================================================
     # Graph Compilation & Invocation
@@ -303,38 +496,69 @@ class FloatChatOrchestrator:
         """
         workflow = StateGraph(FloatChatState)
 
-        # Add Nodes (Exactly Three Primary Agents + Controlled DB Execution)
+        # Add Nodes (Three Primary Agents + Controlled DB Execution + Document Retrieval + Join Barrier)
         workflow.add_node("query_understanding", self.query_understanding_node)
         workflow.add_node("data_query", self.data_query_node)
         workflow.add_node("database_execution", self.database_execution_node)
+        workflow.add_node("document_retrieval", self.document_retrieval_node)
+        workflow.add_node("join_node", self.join_node)
         workflow.add_node("scientific_response", self.scientific_response_node)
 
         # Define Edges
         # START -> query_understanding
         workflow.add_edge(START, "query_understanding")
 
-        # query_understanding -> (conditional) -> [data_query, scientific_response]
+        # query_understanding -> (conditional) -> [data_query, document_retrieval, scientific_response]
         workflow.add_conditional_edges(
             "query_understanding",
             self.route_after_query_understanding,
             {
                 "data_query": "data_query",
+                "document_retrieval": "document_retrieval",
                 "scientific_response": "scientific_response",
             },
         )
 
-        # data_query -> (conditional) -> [database_execution, scientific_response]
+        # data_query -> (conditional) -> [database_execution, join_node, scientific_response]
         workflow.add_conditional_edges(
             "data_query",
             self.route_after_data_query,
             {
                 "database_execution": "database_execution",
+                "join_node": "join_node",
                 "scientific_response": "scientific_response",
             },
         )
 
-        # database_execution -> scientific_response
-        workflow.add_edge("database_execution", "scientific_response")
+        # database_execution -> (conditional) -> [join_node, scientific_response]
+        workflow.add_conditional_edges(
+            "database_execution",
+            self.route_after_database_execution,
+            {
+                "join_node": "join_node",
+                "scientific_response": "scientific_response",
+            },
+        )
+
+        # document_retrieval -> (conditional) -> [join_node, scientific_response]
+        workflow.add_conditional_edges(
+            "document_retrieval",
+            self.route_after_document_retrieval,
+            {
+                "join_node": "join_node",
+                "scientific_response": "scientific_response",
+            },
+        )
+
+        # join_node -> (conditional) -> [scientific_response, __wait__ (END)]
+        workflow.add_conditional_edges(
+            "join_node",
+            self.route_after_join,
+            {
+                "scientific_response": "scientific_response",
+                "__wait__": END,
+            },
+        )
 
         # scientific_response -> END
         workflow.add_edge("scientific_response", END)
@@ -352,6 +576,7 @@ class FloatChatOrchestrator:
         self,
         query: str,
         session_id: Optional[str] = None,
+        cancellation_token: Optional[CancellationToken] = None,
     ) -> FloatChatState:
         """
         Executes the compiled LangGraph workflow end-to-end for a user question.
@@ -359,16 +584,34 @@ class FloatChatOrchestrator:
         Args:
             query: Natural language oceanographic question or data request.
             session_id: Optional session identifier for tracking or multi-turn context.
+            cancellation_token: Optional CancellationToken for cooperative workflow cancellation.
 
         Returns:
             FloatChatState containing complete intermediate outputs and final response.
         """
+        if cancellation_token is not None:
+            cancellation_token.raise_if_cancelled()
+
         graph = self.get_graph()
         initial_state: FloatChatState = {
             "user_query": query,
             "session_id": session_id,
+            "cancellation_token": cancellation_token,
         }
-        final_state: FloatChatState = graph.invoke(initial_state)
+        t0 = time.perf_counter()
+        try:
+            final_state: FloatChatState = graph.invoke(initial_state)
+        except WorkflowCancelledError:
+            logger.info("LangGraph workflow execution cancelled via CancellationToken.")
+            raise
+
+        total_workflow_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        logger.info(
+            "LangGraph workflow execution finished in %.2fms [intent_type=%s, status=%s]",
+            total_workflow_ms,
+            final_state.get("intent_type") or "UNKNOWN",
+            final_state.get("status") or "SUCCESS",
+        )
         return final_state
 
 
@@ -377,6 +620,7 @@ def create_floatchat_graph(
     data_agent: Optional[DataQueryAgent] = None,
     db_executor: Optional[ControlledDatabaseExecutor] = None,
     response_agent: Optional[ScientificResponseAgent] = None,
+    retriever: Optional[ScientificDocumentRetriever] = None,
     config: Optional[Config] = None,
 ) -> CompiledStateGraph:
     """
@@ -387,6 +631,7 @@ def create_floatchat_graph(
         data_agent=data_agent,
         db_executor=db_executor,
         response_agent=response_agent,
+        retriever=retriever,
         config=config,
     )
     return orchestrator.compile()

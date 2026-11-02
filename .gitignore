@@ -72,11 +72,23 @@ yarn-error.log*
 *~
 .DS_Store
 
+# Maven & Java Build Outputs
+target/
+backend/target/
+*.jar
+*.war
+
 # Scientific raw netCDF data files
 *.nc
 !Indian_ARGO_Floats_0f9d_516d_c560_U1788882326310.nc
 
-# Local exports and test datasets
+# Local exports, test datasets, and benchmark run outputs
 data/export_baseline_2024/
 data/processed_2025/
+data/benchmark_stage6b_*
+
+# OS & Temporary files
+Thumbs.db
+desktop.ini
+*.tmp
 

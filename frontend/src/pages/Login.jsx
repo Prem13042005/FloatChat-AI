@@ -1,16 +1,15 @@
-
 import { useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
 const ROLE_ROUTES = {
-  USER: "/dashboard/user",
+  USER: "/dashboard",
   ADMIN: "/dashboard/admin",
   SUPER_ADMIN: "/dashboard/super-admin",
 };
 
 export default function Login() {
-  const { login, isAuthenticated, loading } = useAuth();
+  const { user, login, isAuthenticated, loading } = useAuth();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState("");
@@ -23,7 +22,8 @@ export default function Login() {
   }
 
   if (isAuthenticated) {
-    return <Navigate to="/dashboard" replace />;
+    const role = String(user?.role || "").toUpperCase();
+    return <Navigate to={ROLE_ROUTES[role] || "/dashboard"} replace />;
   }
 
   async function handleSubmit(event) {
@@ -32,14 +32,9 @@ export default function Login() {
     setSubmitting(true);
 
     try {
-      const user = await login(email.trim(), password);
-      const role = String(user?.role || "").toUpperCase();
-      const destination = ROLE_ROUTES[role];
-
-      if (!destination) {
-        setError("Your account has an unsupported role. Contact your administrator.");
-        return;
-      }
+      const authUser = await login(email.trim(), password);
+      const role = String(authUser?.role || "").toUpperCase();
+      const destination = ROLE_ROUTES[role] || "/dashboard";
 
       navigate(destination, { replace: true });
     } catch (err) {

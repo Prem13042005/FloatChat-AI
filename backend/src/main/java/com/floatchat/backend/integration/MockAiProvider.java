@@ -35,4 +35,9 @@ public class MockAiProvider implements AiProvider {
             List.of()
         );
     }
+
+    @Override
+    public ScientificStats getScientificStats() {
+        return new ScientificStats(30L, 107L, 26046L, 12L, 768);
+    }
 }

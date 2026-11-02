@@ -1,25 +1,23 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import Navbar from "../components/Navbar";
+import DataVisualization from "../components/DataVisualization";
 import { getVisualizations } from "../services/visualizationService";
 
 export default function Visualizations() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     getVisualizations()
-      .then((result) => setItems(result.content || result))
-      .catch(() => setItems([]))
+      .then((result) => {
+        setItems(result?.content || (Array.isArray(result) ? result : []));
+        setError("");
+      })
+      .catch((err) => {
+        setItems([]);
+        setError(err?.response?.data?.message || err?.message || "Unable to load scientific visualizations.");
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -30,43 +28,40 @@ export default function Visualizations() {
       <main className="dashboard-page">
         <span className="eyebrow">SCIENTIFIC ANALYTICS</span>
         <h1>Visualizations</h1>
-        <p>Charts will be shown when supported data is available.</p>
+        <p>Interactive oceanographic charts generated from real ARGO profile queries and measurements.</p>
 
         {loading ? (
           <p>Loading visualizations...</p>
+        ) : error ? (
+          <section className="notice-panel" style={{ borderColor: "#fca5a5", background: "#fef2f2" }}>
+            <h2 style={{ color: "#991b1b" }}>Error loading visualizations</h2>
+            <p style={{ color: "#7f1d1d" }}>{error}</p>
+          </section>
         ) : items.length === 0 ? (
           <section className="notice-panel">
             <h2>No scientific visualizations available</h2>
             <p>
-              Scientific data will appear when the AI service and
-              data source are connected. No measurements are fabricated.
+              Interactive oceanographic visualizations are dynamically generated when you query ARGO float data in the chat interface.
             </p>
-            <Link to="/chat">Ask a question →</Link>
+            <Link to="/chat" className="btn btn-primary" style={{ display: "inline-block", marginTop: "1rem" }}>
+              Ask a question in Chat →
+            </Link>
           </section>
         ) : (
-          <div className="visualization-grid">
-            {items.map((item) => (
-              <article className="visualization-card" key={item.id}>
-                <h2>{item.title}</h2>
-                {item.type === "LINE" && Array.isArray(item.data) ? (
-                  <ResponsiveContainer width="100%" height={300}>
-                    <LineChart data={item.data}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="x" />
-                      <YAxis />
-                      <Tooltip />
-                      <Line
-                        type="monotone"
-                        dataKey="y"
-                        stroke="#12b8d5"
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <p>This visualization type needs a supported renderer.</p>
-                )}
-              </article>
-            ))}
+          <div className="visualization-grid" style={{ display: "flex", flexDirection: "column", gap: "2rem" }}>
+            {items.map((item, index) => {
+              const spec = item.spec || item.visualizationSpec || item;
+              return (
+                <article className="visualization-card" key={item.id || index}>
+                  {item.question && (
+                    <div style={{ marginBottom: "8px", fontSize: "0.9rem", color: "#64748b" }}>
+                      Query: <strong>"{item.question}"</strong>
+                    </div>
+                  )}
+                  <DataVisualization spec={spec} />
+                </article>
+              );
+            })}
           </div>
         )}
       </main>

@@ -1,4 +1,3 @@
-
 import {
   createContext,
   useCallback,
@@ -20,12 +19,18 @@ import {
   logout as logoutService,
 } from "../services/authService";
 
+import {
+  subscribeAuthEvent,
+  AUTH_EVENTS,
+} from "../services/authEvents";
+
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => getUser());
   const [loading, setLoading] = useState(true);
 
+  // Initial authentication check on application load
   useEffect(() => {
     let active = true;
 
@@ -64,6 +69,21 @@ export function AuthProvider({ children }) {
 
     return () => {
       active = false;
+    };
+  }, []);
+
+  // Centralized authentication event listener (e.g. HTTP 401 dispatched by Axios interceptor)
+  useEffect(() => {
+    const unsubscribe = subscribeAuthEvent((event) => {
+      if (event?.type === AUTH_EVENTS.UNAUTHORIZED) {
+        logoutService();
+        setUser(null);
+        setLoading(false);
+      }
+    });
+
+    return () => {
+      unsubscribe();
     };
   }, []);
 

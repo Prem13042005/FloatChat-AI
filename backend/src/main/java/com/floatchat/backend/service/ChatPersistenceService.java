@@ -56,7 +56,13 @@ public class ChatPersistenceService {
     }
 
     @Transactional
-    public QueryHistory saveQueryResult(String email, Long conversationId, String question, String answer) {
+    public QueryHistory saveQueryResult(
+        String email,
+        Long conversationId,
+        String question,
+        String answer,
+        String visualizationSpec
+    ) {
         User user = userRepository.findByEmailIgnoreCase(email)
             .orElseThrow(() -> new ResponseStatusException(
                 HttpStatus.NOT_FOUND, "User not found."
@@ -74,7 +80,18 @@ public class ChatPersistenceService {
         history.setConversation(conversation);
         history.setQuestion(question);
         history.setAnswer(answer);
+        history.setVisualizationSpec(visualizationSpec);
         return historyRepository.save(history);
+    }
+
+    @Transactional
+    public QueryHistory saveQueryResult(
+        String email,
+        Long conversationId,
+        String question,
+        String answer
+    ) {
+        return saveQueryResult(email, conversationId, question, answer, null);
     }
 
     @Transactional

@@ -33,7 +33,7 @@ export default function About() {
             <h2>Our approach</h2>
             <p>
               Combine a React interface, a secure Java application backend,
-              persistent MySQL records, and a replaceable AI integration.
+              persistent PostgreSQL/PostGIS records, and a replaceable AI integration.
             </p>
           </article>
 

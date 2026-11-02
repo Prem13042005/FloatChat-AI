@@ -31,6 +31,9 @@ public class QueryHistory {
     @Column(columnDefinition = "TEXT")
     private String answer;
 
+    @Column(name = "visualization_spec", columnDefinition = "TEXT")
+    private String visualizationSpec;
+
     @Column(nullable = false)
     private LocalDateTime createdAt;
 
@@ -76,6 +79,14 @@ public class QueryHistory {
 
     public void setAnswer(String answer) {
         this.answer = answer;
+    }
+
+    public String getVisualizationSpec() {
+        return visualizationSpec;
+    }
+
+    public void setVisualizationSpec(String visualizationSpec) {
+        this.visualizationSpec = visualizationSpec;
     }
 
     public LocalDateTime getCreatedAt() {

@@ -1,4 +1,3 @@
-
 import { useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import {
@@ -14,20 +13,26 @@ import {
 import { useAuth } from "../context/AuthContext";
 import "../styles/Navbar.css";
 
+const ROLE_HOME = {
+  USER: "/dashboard",
+  ADMIN: "/dashboard/admin",
+  SUPER_ADMIN: "/dashboard/super-admin",
+};
+
 export default function Navbar() {
-  const { user, logout } = useAuth();
+  const { user, isAuthenticated, logout } = useAuth();
   const navigate = useNavigate();
 
   const [profileOpen, setProfileOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  const isLoggedIn =
-    Boolean(user) &&
-    Boolean(localStorage.getItem("floatchat_token"));
+  const isLoggedIn = Boolean(isAuthenticated && user);
 
   const displayName = user?.name || "FloatChat User";
   const email = user?.email || "Email not available";
-  const role = user?.role || "USER";
+  const rawRole = user?.role || "USER";
+  const normalizedRole = String(rawRole).toUpperCase();
+  const dashboardPath = ROLE_HOME[normalizedRole] || "/dashboard";
 
   const initials = displayName
     .trim()
@@ -119,7 +124,7 @@ export default function Navbar() {
           {isLoggedIn && (
             <>
               <NavLink
-                to="/dashboard"
+                to={dashboardPath}
                 onClick={closeMenus}
                 className={({ isActive }) =>
                   `fc-nav-link ${isActive ? "active" : ""}`
@@ -177,7 +182,7 @@ export default function Navbar() {
 
                 <span className="fc-profile-trigger-info">
                   <strong>{displayName}</strong>
-                  <small>{role.replaceAll("_", " ")}</small>
+                  <small>{rawRole.replaceAll("_", " ")}</small>
                 </span>
 
                 <ChevronDown
@@ -207,7 +212,7 @@ export default function Navbar() {
                         <strong>{displayName}</strong>
                         <span>{email}</span>
                         <span className="fc-profile-role">
-                          {role.replaceAll("_", " ")}
+                          {rawRole.replaceAll("_", " ")}
                         </span>
                       </div>
                     </div>
@@ -224,13 +229,24 @@ export default function Navbar() {
                     </Link>
 
                     <Link
-                      to="/dashboard"
+                      to={dashboardPath}
                       className="fc-profile-menu-item"
                       onClick={closeMenus}
                     >
                       <LayoutDashboard size={17} />
                       <span>Dashboard</span>
                     </Link>
+
+                    {(normalizedRole === "ADMIN" || normalizedRole === "SUPER_ADMIN") && (
+                      <Link
+                        to="/user-management"
+                        className="fc-profile-menu-item"
+                        onClick={closeMenus}
+                      >
+                        <Settings size={17} />
+                        <span>Administration</span>
+                      </Link>
+                    )}
 
                     <button
                       type="button"

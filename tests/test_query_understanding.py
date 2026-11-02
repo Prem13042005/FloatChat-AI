@@ -370,6 +370,375 @@ class TestQueryUnderstandingAgent(unittest.TestCase):
             QueryIntent.model_validate({"wmo_ids": {"id": "2901333"}})
         self.assertIn("wmo_ids", str(ctx.exception))
 
+    # ===================================================================
+    # 7. Regional Gazetteer Tests (Stage 8B Phase 2B)
+    # ===================================================================
+
+    def test_27_arabian_sea_parent_bounds(self):
+        """Verify Arabian Sea resolves deterministically to approved parent bounding box."""
+        mock_intent = QueryIntent(intent_type=IntentType.DATA_ONLY)
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("What is the average temperature in the Arabian Sea?")
+        self.assertIsNotNone(res.spatial_bounds)
+        self.assertEqual(res.spatial_bounds.latitude_min, 8.0)
+        self.assertEqual(res.spatial_bounds.latitude_max, 24.0)
+        self.assertEqual(res.spatial_bounds.longitude_min, 55.0)
+        self.assertEqual(res.spatial_bounds.longitude_max, 75.0)
+
+    def test_28_northern_arabian_sea_subregion_bounds(self):
+        """Verify Northern Arabian Sea resolves to northern subregion bounding box."""
+        mock_intent = QueryIntent(intent_type=IntentType.DATA_ONLY)
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Find salinity in the Northern Arabian Sea.")
+        self.assertIsNotNone(res.spatial_bounds)
+        self.assertEqual(res.spatial_bounds.latitude_min, 18.0)
+        self.assertEqual(res.spatial_bounds.latitude_max, 24.0)
+        self.assertEqual(res.spatial_bounds.longitude_min, 58.0)
+        self.assertEqual(res.spatial_bounds.longitude_max, 74.0)
+
+    def test_29_central_arabian_sea_subregion_bounds(self):
+        """Verify Central Arabian Sea resolves to central subregion bounding box."""
+        mock_intent = QueryIntent(intent_type=IntentType.DATA_ONLY)
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Show observations in the Central Arabian Sea.")
+        self.assertIsNotNone(res.spatial_bounds)
+        self.assertEqual(res.spatial_bounds.latitude_min, 14.0)
+        self.assertEqual(res.spatial_bounds.latitude_max, 18.0)
+        self.assertEqual(res.spatial_bounds.longitude_min, 62.0)
+        self.assertEqual(res.spatial_bounds.longitude_max, 72.0)
+
+    def test_30_southern_arabian_sea_subregion_bounds(self):
+        """Verify Southern Arabian Sea resolves to southern subregion bounding box."""
+        mock_intent = QueryIntent(intent_type=IntentType.DATA_ONLY)
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Show temperature profiles in the Southern Arabian Sea.")
+        self.assertIsNotNone(res.spatial_bounds)
+        self.assertEqual(res.spatial_bounds.latitude_min, 8.0)
+        self.assertEqual(res.spatial_bounds.latitude_max, 14.0)
+        self.assertEqual(res.spatial_bounds.longitude_min, 60.0)
+        self.assertEqual(res.spatial_bounds.longitude_max, 75.0)
+
+    def test_31_gazetteer_case_insensitivity(self):
+        """Verify gazetteer matches case-insensitively across upper, lower, and mixed case."""
+        mock_intent = QueryIntent(intent_type=IntentType.DATA_ONLY)
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("temperature in the aRaBiAn SeA")
+        self.assertIsNotNone(res.spatial_bounds)
+        self.assertEqual(res.spatial_bounds.latitude_min, 8.0)
+        self.assertEqual(res.spatial_bounds.latitude_max, 24.0)
+
+    def test_32_subregion_longest_match_precedence(self):
+        """Verify subregion name takes precedence over parent name in matching."""
+        mock_intent = QueryIntent(intent_type=IntentType.DATA_ONLY)
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Water temperature in the northern Arabian Sea basin.")
+        self.assertIsNotNone(res.spatial_bounds)
+        # Must match Northern (18-24), NOT parent Arabian Sea (8-24)
+        self.assertEqual(res.spatial_bounds.latitude_min, 18.0)
+        self.assertEqual(res.spatial_bounds.latitude_max, 24.0)
+
+    def test_33_unknown_region_no_invented_bounds(self):
+        """Verify unknown or unapproved regions do not receive invented coordinates."""
+        mock_intent = QueryIntent(intent_type=IntentType.DATA_ONLY)
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Show salinity profiles in the Gulf of Oman.")
+        self.assertIsNone(res.spatial_bounds)
+
+    # ===================================================================
+    # 8. Coordinate Precedence & Hallucination Discarding Tests
+    # ===================================================================
+
+    def test_34_explicit_coordinates_preserved_with_named_region(self):
+        """Verify explicit user-supplied coordinates are not overwritten by gazetteer."""
+        # Simulated LLM output capturing user's explicit coordinates 12N-16N
+        mock_intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            spatial_bounds=SpatialBounds(latitude_min=12.0, latitude_max=16.0),
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Arabian Sea temperature between latitude 12 and 16.")
+        self.assertIsNotNone(res.spatial_bounds)
+        # Must preserve user coordinates (12-16), NOT overwrite with Arabian Sea (8-24)
+        self.assertEqual(res.spatial_bounds.latitude_min, 12.0)
+        self.assertEqual(res.spatial_bounds.latitude_max, 16.0)
+
+    def test_35_recognized_region_without_coordinates_receives_gazetteer_bounds(self):
+        """Verify single recognized region without user coordinates receives gazetteer bounds."""
+        mock_intent = QueryIntent(intent_type=IntentType.DATA_ONLY, spatial_bounds=None)
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Show profiles in Central Arabian Sea.")
+        self.assertIsNotNone(res.spatial_bounds)
+        self.assertEqual(res.spatial_bounds.latitude_min, 14.0)
+        self.assertEqual(res.spatial_bounds.latitude_max, 18.0)
+
+    def test_36_unsupported_hallucinated_coordinates_discarded_when_query_has_no_coords(self):
+        """Verify hallucinated coordinates from LLM are discarded when query supplies no coordinates."""
+        # Simulating LLM returning arbitrary hallucinated coordinates for a query without numbers
+        mock_intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            spatial_bounds=SpatialBounds(latitude_min=-10.0, latitude_max=10.0, longitude_min=-50.0, longitude_max=50.0),
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Tell me about water.")
+        self.assertIsNone(res.spatial_bounds)
+
+    def test_37_multiple_regions_in_comparison_not_collapsed(self):
+        """Verify multiple distinct regions in a comparison query are not merged into one box."""
+        mock_intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.COMPARISON,
+            comparison_target=ComparisonTarget(
+                is_comparison=True,
+                comparison_targets=["Northern Arabian Sea", "Southern Arabian Sea"],
+            ),
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Compare temperature between Northern Arabian Sea and Southern Arabian Sea.")
+        # spatial_bounds must NOT be a collapsed single bounding box
+        self.assertIsNone(res.spatial_bounds)
+        self.assertTrue(res.comparison_target.is_comparison)
+        self.assertEqual(len(res.comparison_target.comparison_targets), 2)
+
+    def test_38_multiple_regions_without_comparison_not_merged(self):
+        """Verify multiple distinct regions without comparison intent are not merged into an overbroad box."""
+        mock_intent = QueryIntent(intent_type=IntentType.DATA_ONLY)
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Show observations from Northern Arabian Sea and Southern Arabian Sea.")
+        self.assertIsNone(res.spatial_bounds)
+
+    # ===================================================================
+    # 9. Aggregation Operation Normalization Tests
+    # ===================================================================
+
+    def test_39_aggregation_operation_json_null_remains_none(self):
+        """Verify Python None / JSON null produces None for aggregation_operation."""
+        intent = QueryIntent.model_validate({"intent_type": "DATA_ONLY", "aggregation_operation": None})
+        self.assertIsNone(intent.aggregation_operation)
+
+    def test_40_aggregation_operation_string_null_and_none_coerced(self):
+        """Verify string 'null', 'None', and 'none' normalize cleanly to Python None."""
+        for val in ("null", "NULL", "None", "none"):
+            intent = QueryIntent.model_validate({"intent_type": "DATA_ONLY", "aggregation_operation": val})
+            self.assertIsNone(intent.aggregation_operation, f"Failed for input: {val!r}")
+
+    def test_41_aggregation_operation_whitespace_coerced_to_none(self):
+        """Verify empty and whitespace-only strings normalize to Python None."""
+        for val in ("", "   ", "\t\n"):
+            intent = QueryIntent.model_validate({"intent_type": "DATA_ONLY", "aggregation_operation": val})
+            self.assertIsNone(intent.aggregation_operation, f"Failed for input: {val!r}")
+
+    def test_42_aggregation_operation_valid_enum_preserved(self):
+        """Verify valid AggregationOp enum values are preserved."""
+        for op in ("average", "minimum", "maximum", "count", "sum"):
+            intent = QueryIntent.model_validate({"intent_type": "DATA_ONLY", "aggregation_operation": op})
+            self.assertEqual(intent.aggregation_operation.value, op)
+
+    def test_43_aggregation_operation_invalid_value_rejected(self):
+        """Verify unsupported aggregation values continue to be rejected by Pydantic."""
+        with self.assertRaises(ValidationError) as ctx:
+            QueryIntent.model_validate({"intent_type": "DATA_ONLY", "aggregation_operation": "median"})
+        self.assertIn("aggregation_operation", str(ctx.exception))
+
+    # ===================================================================
+    # 10. Comparison Target Platform ID Synchronization Tests
+    # ===================================================================
+
+    def test_44_two_valid_float_ids_synchronized_to_wmo_ids(self):
+        """Verify valid seven-digit float identifiers in comparison_targets synchronize into wmo_ids."""
+        mock_intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.COMPARISON,
+            comparison_target=ComparisonTarget(
+                is_comparison=True,
+                comparison_targets=["1902671", "1902672"],
+            ),
+            wmo_ids=[],
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Compare float 1902671 with float 1902672.")
+        self.assertEqual(res.wmo_ids, ["1902671", "1902672"])
+        # Original comparison targets must remain preserved
+        self.assertEqual(res.comparison_target.comparison_targets, ["1902671", "1902672"])
+
+    def test_45_existing_wmo_ids_preserved_and_not_duplicated(self):
+        """Verify existing wmo_ids are preserved without creating duplicate entries."""
+        mock_intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.COMPARISON,
+            comparison_target=ComparisonTarget(
+                is_comparison=True,
+                comparison_targets=["WMO 1902671", "1902672"],
+            ),
+            wmo_ids=["1902671"],
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Compare float 1902671 with float 1902672.")
+        self.assertEqual(res.wmo_ids, ["1902671", "1902672"])
+
+    def test_46_non_numeric_region_names_not_converted_to_float_ids(self):
+        """Verify non-numeric comparison target strings are not converted to float IDs."""
+        mock_intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.COMPARISON,
+            comparison_target=ComparisonTarget(
+                is_comparison=True,
+                comparison_targets=["Northern Arabian Sea", "Southern Arabian Sea"],
+            ),
+            wmo_ids=[],
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Compare Northern Arabian Sea and Southern Arabian Sea.")
+        self.assertEqual(res.wmo_ids, [])
+        self.assertEqual(res.comparison_target.comparison_targets, ["Northern Arabian Sea", "Southern Arabian Sea"])
+
+    def test_47_non_7_digit_numbers_not_converted_to_float_ids(self):
+        """Verify arbitrary 4-digit years or depths in comparison targets are not added to wmo_ids."""
+        mock_intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.COMPARISON,
+            comparison_target=ComparisonTarget(
+                is_comparison=True,
+                comparison_targets=["2024", "2025"],
+            ),
+            wmo_ids=[],
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Compare temperature between 2024 and 2025.")
+        self.assertEqual(res.wmo_ids, [])
+
+    def test_48_comparison_targets_preserved_unchanged(self):
+        """Verify comparison targets list is preserved exactly as extracted."""
+        original_targets = ["surface", "deep-water"]
+        mock_intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.COMPARISON,
+            comparison_target=ComparisonTarget(
+                is_comparison=True,
+                comparison_targets=original_targets,
+            ),
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze("Compare surface and deep-water temperature.")
+        self.assertEqual(res.comparison_target.comparison_targets, original_targets)
+
+    # ===================================================================
+    # 7. Competition Fix 5: Mixed-Intent Routing Regression Tests
+    # ===================================================================
+
+    def test_49_hybrid_mixed_observational_and_ctd_explanation(self):
+        """Verify mixed question with observations request and CTD sensor explanation routes to HYBRID."""
+        mock_intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,  # Simulate LLM returning DATA_ONLY initially
+            intent_category=IntentCategory.FILTERING,
+            physical_variables=[PhysicalVariable.TEMP, PhysicalVariable.PSAL],
+            wmo_ids=["1902671"],
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze(
+            "Show temperature observations for float 1902671 and explain how the CTD sensor measures temperature and salinity."
+        )
+        self.assertEqual(res.intent_type, IntentType.HYBRID)
+        self.assertEqual(res.intent_category, IntentCategory.COMBINED)
+        self.assertEqual(res.wmo_ids, ["1902671"])
+
+    def test_50_hybrid_mixed_salinity_comparison_and_pss78_scale(self):
+        """Verify mixed question with salinity comparison and PSS-78 scale explanation routes to HYBRID."""
+        mock_intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.COMPARISON,
+            physical_variables=[PhysicalVariable.PSAL],
+            wmo_ids=["1902671"],
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze(
+            "Compare salinity measurements for float 1902671 and explain the PSS-78 scale."
+        )
+        self.assertEqual(res.intent_type, IntentType.HYBRID)
+        self.assertEqual(res.intent_category, IntentCategory.COMBINED)
+
+    def test_51_hybrid_mixed_profile_plot_and_depth_explanation(self):
+        """Verify mixed question with vertical profile plot and depth variation explanation routes to HYBRID."""
+        mock_intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.PRESSURE_DEPTH,
+            physical_variables=[PhysicalVariable.TEMP],
+            wmo_ids=["1902671"],
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze(
+            "Plot the temperature profile for float 1902671 and explain why temperature changes with depth."
+        )
+        self.assertEqual(res.intent_type, IntentType.HYBRID)
+        self.assertEqual(res.intent_category, IntentCategory.COMBINED)
+
+    def test_52_data_only_classification_preserves_pure_observational_query(self):
+        """Verify pure observational database queries retain DATA_ONLY classification."""
+        mock_intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.AGGREGATION,
+            physical_variables=[PhysicalVariable.TEMP, PhysicalVariable.PSAL],
+            wmo_ids=["1902671"],
+            aggregation_operation=AggregationOp.AVERAGE,
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze(
+            "Show the average temperature and salinity observations for float 1902671."
+        )
+        self.assertEqual(res.intent_type, IntentType.DATA_ONLY)
+        self.assertEqual(res.intent_category, IntentCategory.AGGREGATION)
+
+    def test_53_knowledge_only_classification_preserves_pure_conceptual_query(self):
+        """Verify pure conceptual/documentation questions retain KNOWLEDGE_ONLY classification."""
+        mock_intent = QueryIntent(
+            intent_type=IntentType.KNOWLEDGE_ONLY,
+            intent_category=IntentCategory.RETRIEVAL,
+            physical_variables=[],
+            wmo_ids=[],
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze(
+            "Explain the PSS-78 practical salinity scale and its relevance to ARGO floats."
+        )
+        self.assertEqual(res.intent_type, IntentType.KNOWLEDGE_ONLY)
+        self.assertEqual(res.intent_category, IntentCategory.RETRIEVAL)
+
+    def test_54_explain_observations_without_conceptual_theory_remains_data_only(self):
+        """Verify 'explain the observations' without scientific concept retains DATA_ONLY."""
+        mock_intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.FILTERING,
+            physical_variables=[PhysicalVariable.TEMP],
+            wmo_ids=["1902671"],
+        )
+        self.mock_provider.generate_structured.return_value = mock_intent
+
+        res = self.agent.analyze(
+            "Explain the temperature observations for float 1902671."
+        )
+        self.assertEqual(res.intent_type, IntentType.DATA_ONLY)
+
 
 if __name__ == "__main__":
     unittest.main()

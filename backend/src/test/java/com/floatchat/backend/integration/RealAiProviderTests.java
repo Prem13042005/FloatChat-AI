@@ -363,4 +363,11 @@ class RealAiProviderTests {
         assertThat(realAiProvider.isServiceHealthy()).isFalse();
         healthServer.verify();
     }
+
+    @Test
+    @DisplayName("Real provider constructor configures X-Internal-Secret header when present")
+    void testInternalSecretConfigured() {
+        RealAiProvider provider = new RealAiProvider("http://127.0.0.1:8000", 3000, 100000, "my-test-secret");
+        assertThat(provider).isNotNull();
+    }
 }

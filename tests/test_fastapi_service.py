@@ -37,23 +37,26 @@ from src.agents.response.models import (
 from src.api.main import create_app
 from src.config import Config
 from src.database.models import DatabaseExecutionResult, ExecutionStatus
+from src.llm import GenerationResult
 from src.orchestration import FloatChatOrchestrator, FloatChatState
 
 
 class TestFastAPIService(unittest.TestCase):
 
     def setUp(self):
+        self.internal_secret = "test_shared_secret_for_unit_tests"
         self.config = Config(
             postgres_port=5432,
             request_timeout_seconds=5.0,
             max_query_length=2000,
             cors_origins="http://localhost:3000,http://localhost:8080",
+            internal_secret=self.internal_secret,
         )
         self.app = create_app(config=self.config)
         self.mock_orchestrator = MagicMock(spec=FloatChatOrchestrator)
         self.app.state.orchestrator = self.mock_orchestrator
         self.app.state.config = self.config
-        self.client = TestClient(self.app)
+        self.client = TestClient(self.app, headers={"X-Internal-Secret": self.internal_secret})
 
     # ===================================================================
     # 1. Health & Readiness Probe Tests
@@ -257,27 +260,36 @@ class TestFastAPIService(unittest.TestCase):
     # ===================================================================
 
     def test_10_orchestration_timeout_returns_504(self):
-        """Verify workflow timeout returns HTTP 504 Gateway Timeout."""
+        """Verify workflow timeout returns HTTP 504 Gateway Timeout and signals cancellation."""
         import time
 
-        def slow_invoke(query, session_id):
-            time.sleep(0.3)
+        captured_tokens = []
+
+        def slow_invoke(query, session_id, cancellation_token=None):
+            captured_tokens.append(cancellation_token)
+            for _ in range(30):
+                if cancellation_token and cancellation_token.is_cancelled:
+                    break
+                time.sleep(0.01)
             return {}
 
         self.mock_orchestrator.invoke.side_effect = slow_invoke
 
         # Re-initialize client with 0.1s timeout
-        fast_timeout_config = Config(request_timeout_seconds=0.1)
+        fast_timeout_config = Config(request_timeout_seconds=0.1, internal_secret=self.internal_secret)
         fast_app = create_app(config=fast_timeout_config)
         fast_app.state.orchestrator = self.mock_orchestrator
         fast_app.state.config = fast_timeout_config
-        fast_client = TestClient(fast_app)
+        fast_client = TestClient(fast_app, headers={"X-Internal-Secret": self.internal_secret})
 
         res = fast_client.post("/api/v1/chat", json={"query": "Slow query"})
         self.assertEqual(res.status_code, status.HTTP_504_GATEWAY_TIMEOUT)
         data = res.json()
         self.assertEqual(data["error_code"], "HTTP_ERROR")
         self.assertIn("timed out", data["message"])
+        self.assertTrue(len(captured_tokens) > 0)
+        self.assertIsNotNone(captured_tokens[0])
+        self.assertTrue(captured_tokens[0].is_cancelled, "Cancellation token must be signalled on timeout")
 
     def test_11_orchestration_unhandled_exception_returns_500_without_leaks(self):
         """Verify unhandled orchestrator crash returns HTTP 500 without leaking stack traces or paths."""
@@ -391,16 +403,255 @@ class TestFastAPIService(unittest.TestCase):
 
     def test_16_query_length_validation_with_configured_limit(self):
         """Verify queries exceeding config.max_query_length are rejected with HTTP 400."""
-        custom_config = Config(max_query_length=50)
+        custom_config = Config(max_query_length=50, internal_secret=self.internal_secret)
         custom_app = create_app(config=custom_config)
         custom_app.state.orchestrator = self.mock_orchestrator
         custom_app.state.config = custom_config
-        custom_client = TestClient(custom_app)
+        custom_client = TestClient(custom_app, headers={"X-Internal-Secret": self.internal_secret})
 
         oversized_for_config = "A" * 60
         res = custom_client.post("/api/v1/chat", json={"query": oversized_for_config})
         self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("exceeds the maximum allowed limit of 50", res.json()["message"])
+
+    # ===================================================================
+    # 7. F11 Shared Secret & Security Hardening Tests
+    # ===================================================================
+
+    def test_17_internal_secret_missing_rejects_with_401(self):
+        """Verify request without X-Internal-Secret header is rejected with HTTP 401."""
+        unauthenticated_client = TestClient(self.app)
+        res = unauthenticated_client.post("/api/v1/chat", json={"query": "Test query without auth"})
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertIn("Invalid or missing internal service secret", res.json()["message"])
+
+    def test_18_internal_secret_invalid_rejects_with_401(self):
+        """Verify request with wrong X-Internal-Secret header is rejected with HTTP 401."""
+        wrong_auth_client = TestClient(self.app, headers={"X-Internal-Secret": "wrong_secret_12345"})
+        res = wrong_auth_client.post("/api/v1/chat", json={"query": "Test query with wrong auth"})
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertIn("Invalid or missing internal service secret", res.json()["message"])
+
+    def test_19_health_and_ready_remain_public_without_auth_secret(self):
+        """Verify /health and /ready do not require X-Internal-Secret."""
+        unauthenticated_client = TestClient(self.app)
+        res_health = unauthenticated_client.get("/health")
+        self.assertEqual(res_health.status_code, status.HTTP_200_OK)
+
+        with patch("src.api.main.get_db_connection") as mock_conn:
+            mock_c = MagicMock()
+            mock_cur = MagicMock()
+            mock_cur.fetchall.return_value = [("postgis",), ("vector",)]
+            mock_c.cursor.return_value.__enter__.return_value = mock_cur
+            mock_conn.return_value = mock_c
+            res_ready = unauthenticated_client.get("/ready")
+            self.assertEqual(res_ready.status_code, status.HTTP_200_OK)
+
+    def test_20_scientific_stats_endpoint_returns_metrics(self):
+        """Verify /api/v1/stats returns real dataset count metrics with valid auth."""
+        with patch("src.api.main.get_db_connection") as mock_conn:
+            mock_c = MagicMock()
+            mock_cur = MagicMock()
+            # Order of fetchone calls: floats, profiles, measurements, chunks, dim
+            mock_cur.fetchone.side_effect = [(30,), (107,), (26046,), (12,), (768,)]
+            mock_c.cursor.return_value.__enter__.return_value = mock_cur
+            mock_conn.return_value = mock_c
+
+            res = self.client.get("/api/v1/stats")
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            body = res.json()
+            self.assertEqual(body["total_floats"], 30)
+            self.assertEqual(body["total_profiles"], 107)
+            self.assertEqual(body["total_measurements"], 26046)
+            self.assertEqual(body["total_document_chunks"], 12)
+            self.assertEqual(body["embedding_dimension"], 768)
+
+    def test_21_scientific_stats_requires_internal_secret(self):
+        """Verify /api/v1/stats requires internal secret when configured."""
+        unauthenticated_client = TestClient(self.app)
+        res = unauthenticated_client.get("/api/v1/stats")
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+    def test_22_startup_warmup_successful(self):
+        """Verify startup warm-up calls generation model with dedicated 5.0s timeout, prompt='ping' and max_tokens=1."""
+        config = Config(
+            llm_provider="ollama",
+            ollama_warmup_on_startup=True,
+            ollama_warmup_timeout_seconds=5.0,
+            ollama_model="qwen2.5:1.5b-instruct",
+            ollama_keep_alive="30m",
+            internal_secret=self.internal_secret,
+        )
+        with patch("src.llm.get_llm_provider") as mock_get_provider:
+            mock_provider = MagicMock()
+            mock_provider.generate.return_value = GenerationResult(
+                text="pong",
+                load_duration_ms=15.0,
+            )
+            mock_get_provider.return_value = mock_provider
+
+            app = create_app(config=config)
+            with TestClient(app, headers={"X-Internal-Secret": self.internal_secret}) as client:
+                res = client.get("/health")
+                self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+            mock_get_provider.assert_called_once_with(
+                "ollama",
+                model="qwen2.5:1.5b-instruct",
+                base_url="http://localhost:11434",
+                timeout=5.0,
+                keep_alive="30m",
+            )
+            mock_provider.generate.assert_called_once_with(
+                prompt="ping",
+                max_tokens=1,
+                temperature=0.0,
+            )
+
+    def test_23_startup_warmup_failure_is_non_fatal(self):
+        """Verify startup warm-up exception does not crash or block service startup."""
+        config = Config(
+            llm_provider="ollama",
+            ollama_warmup_on_startup=True,
+            ollama_warmup_timeout_seconds=5.0,
+            internal_secret=self.internal_secret,
+        )
+        with patch("src.llm.get_llm_provider") as mock_get_provider:
+            mock_provider = MagicMock()
+            mock_provider.generate.side_effect = Exception("Ollama connection refused")
+            mock_get_provider.return_value = mock_provider
+
+            app = create_app(config=config)
+            with TestClient(app, headers={"X-Internal-Secret": self.internal_secret}) as client:
+                res = client.get("/health")
+                self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_24_startup_warmup_disabled(self):
+        """Verify startup warm-up is skipped completely when ollama_warmup_on_startup=False."""
+        config = Config(
+            llm_provider="ollama",
+            ollama_warmup_on_startup=False,
+            internal_secret=self.internal_secret,
+        )
+        with patch("src.llm.get_llm_provider") as mock_get_provider:
+            app = create_app(config=config)
+            with TestClient(app, headers={"X-Internal-Secret": self.internal_secret}) as client:
+                res = client.get("/health")
+                self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+            mock_get_provider.assert_not_called()
+
+    # ===================================================================
+    # 10. Competition Fix 2: Worker Cancellation & Concurrency Lifecycle
+    # ===================================================================
+
+    def test_25_timed_out_request_keeps_slot_until_worker_exits(self):
+        """Verify concurrency slot remains occupied after timeout until background worker completes."""
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+
+        worker_started_event = Event()
+
+        def lingering_invoke(query, session_id, cancellation_token=None):
+            worker_started_event.set()
+            # Wait until cancellation is signalled upon timeout
+            for _ in range(100):
+                if cancellation_token and cancellation_token.is_cancelled:
+                    break
+                time.sleep(0.01)
+            return {}
+
+        self.mock_orchestrator.invoke.side_effect = lingering_invoke
+
+        fast_timeout_config = Config(request_timeout_seconds=0.1, internal_secret=self.internal_secret)
+        fast_app = create_app(config=fast_timeout_config)
+        fast_app.state.orchestrator = self.mock_orchestrator
+        fast_client = TestClient(fast_app, headers={"X-Internal-Secret": self.internal_secret})
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            # 1. Start request 1 in thread
+            fut1 = executor.submit(fast_client.post, "/api/v1/chat", json={"query": "Lingering query"})
+
+            # 2. Wait until worker 1 has started and acquired slot
+            started = worker_started_event.wait(timeout=1.0)
+            self.assertTrue(started, "Worker 1 must have started")
+
+            # 3. Request 2 while worker 1 is active must receive HTTP 429
+            res2 = fast_client.post("/api/v1/chat", json={"query": "Subsequent query during linger"})
+            self.assertEqual(res2.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+            self.assertEqual(res2.headers.get("retry-after"), "30")
+
+            # 4. Request 1 times out with HTTP 504
+            res1 = fut1.result(timeout=2.0)
+            self.assertEqual(res1.status_code, status.HTTP_504_GATEWAY_TIMEOUT)
+
+        # 5. After worker finishes, slot is freed
+        time.sleep(0.05)
+        self.assertEqual(fast_app.state.active_inferences, 0)
+
+    def test_26_worker_cancelled_error_post_timeout_consumed_cleanly(self):
+        """Verify WorkflowCancelledError in background worker is consumed without unhandled exception warning."""
+        import time
+        from src.orchestration.cancellation import WorkflowCancelledError
+
+        def cancelling_invoke(query, session_id, cancellation_token=None):
+            for _ in range(50):
+                if cancellation_token and cancellation_token.is_cancelled:
+                    raise WorkflowCancelledError("Cancelled by token")
+                time.sleep(0.01)
+            return {}
+
+        self.mock_orchestrator.invoke.side_effect = cancelling_invoke
+
+        fast_timeout_config = Config(request_timeout_seconds=0.05, internal_secret=self.internal_secret)
+        fast_app = create_app(config=fast_timeout_config)
+        fast_app.state.orchestrator = self.mock_orchestrator
+        fast_client = TestClient(fast_app, headers={"X-Internal-Secret": self.internal_secret})
+
+        res = fast_client.post("/api/v1/chat", json={"query": "Cancel worker query"})
+        self.assertEqual(res.status_code, status.HTTP_504_GATEWAY_TIMEOUT)
+
+        time.sleep(0.05)
+        self.assertEqual(fast_app.state.active_inferences, 0)
+        sem = fast_app.state.inference_semaphore
+        self.assertEqual(sem._value, 1)
+
+    def test_27_cancellation_and_completion_slot_accounting(self):
+        """Verify subsequent request proceeds smoothly after cancelled request worker finishes."""
+        import time
+
+        def fast_exit_invoke(query, session_id, cancellation_token=None):
+            while not (cancellation_token and cancellation_token.is_cancelled):
+                time.sleep(0.01)
+            return {}
+
+        self.mock_orchestrator.invoke.side_effect = fast_exit_invoke
+
+        fast_timeout_config = Config(request_timeout_seconds=0.05, internal_secret=self.internal_secret)
+        fast_app = create_app(config=fast_timeout_config)
+        fast_app.state.orchestrator = self.mock_orchestrator
+        fast_client = TestClient(fast_app, headers={"X-Internal-Secret": self.internal_secret})
+
+        res1 = fast_client.post("/api/v1/chat", json={"query": "First query"})
+        self.assertEqual(res1.status_code, status.HTTP_504_GATEWAY_TIMEOUT)
+
+        time.sleep(0.05)
+        self.assertEqual(fast_app.state.active_inferences, 0)
+
+        # Subsequent query succeeds
+        self.mock_orchestrator.invoke.side_effect = None
+        self.mock_orchestrator.invoke.return_value = {
+            "user_query": "Next query",
+            "intent_type": "KNOWLEDGE_ONLY",
+            "final_response": "Next response",
+            "status": "SUCCESS",
+        }
+        res2 = fast_client.post("/api/v1/chat", json={"query": "Next query"})
+        self.assertEqual(res2.status_code, status.HTTP_200_OK)
+        self.assertEqual(res2.json()["answer"], "Next response")
+        self.assertEqual(fast_app.state.active_inferences, 0)
 
 
 if __name__ == "__main__":

@@ -121,3 +121,14 @@ class ErrorDetail(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat(),
         description="UTC timestamp of the error event."
     )
+
+
+class ScientificStatsResponse(BaseModel):
+    """
+    Verified scientific dataset metrics from the ARGO PostgreSQL database.
+    """
+    total_floats: int = Field(description="Total count of ARGO floats in database.")
+    total_profiles: int = Field(description="Total count of ARGO profiles in database.")
+    total_measurements: int = Field(description="Total count of ARGO measurements in database.")
+    total_document_chunks: int = Field(description="Total count of scientific document embedding chunks.")
+    embedding_dimension: int = Field(description="Vector embedding dimension.")

@@ -18,7 +18,12 @@ from src.llm.exceptions import (
     LLMTimeoutError,
 )
 from src.llm.gemini_provider import GeminiProvider
-from src.llm.ollama_provider import OllamaProvider
+from src.llm.ollama_provider import (
+    MODEL_CROSS_FIELD_RULES,
+    MODEL_FIELD_SPEC_OVERRIDES,
+    OllamaProvider,
+    build_compact_schema_instruction,
+)
 
 
 def get_llm_provider(

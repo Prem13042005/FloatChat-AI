@@ -12,7 +12,9 @@ Endpoints:
 """
 
 import asyncio
+import hmac
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
@@ -29,10 +31,12 @@ from src.api.models import (
     HealthResponse,
     ReadinessResponse,
     SQLMeta,
+    ScientificStatsResponse,
 )
 from src.config import Config, get_config
 from src.database.connection import get_db_connection
 from src.orchestration import FloatChatOrchestrator, FloatChatState
+from src.orchestration.cancellation import CancellationToken, WorkflowCancelledError
 
 logger = logging.getLogger("floatchat.api")
 
@@ -54,16 +58,62 @@ async def lifespan(app: FastAPI):
         app.state.config = config
         if getattr(app.state, "orchestrator", None) is None:
             app.state.orchestrator = FloatChatOrchestrator(config=config)
+        if getattr(app.state, "inference_gate_lock", None) is None:
+            app.state.inference_gate_lock = asyncio.Lock()
         if getattr(app.state, "inference_semaphore", None) is None:
             app.state.inference_semaphore = asyncio.Semaphore(config.max_concurrent_inferences)
-        logger.info("FloatChat Orchestrator and Inference Semaphore initialized successfully.")
+        app.state.active_inferences = 0
+        logger.info("FloatChat Orchestrator and Inference Concurrency Gate initialized successfully.")
     except Exception as e:
         logger.error(f"Failed to initialize FloatChat Orchestrator during startup: {e}")
         # Allow app to start so health/ready checks can report status
         app.state.config = config
         app.state.orchestrator = None
+        if getattr(app.state, "inference_gate_lock", None) is None:
+            app.state.inference_gate_lock = asyncio.Lock()
         if getattr(app.state, "inference_semaphore", None) is None:
             app.state.inference_semaphore = asyncio.Semaphore(config.max_concurrent_inferences)
+        app.state.active_inferences = 0
+
+    # Optional non-blocking startup warm-up for Ollama generation model
+    if config.ollama_warmup_on_startup and config.llm_provider == "ollama":
+        warmup_start = time.perf_counter()
+        try:
+            logger.info(
+                "Executing startup warm-up for Ollama generation model: '%s' (keep_alive=%s, timeout=%0.1fs)...",
+                config.ollama_model,
+                config.ollama_keep_alive,
+                config.ollama_warmup_timeout_seconds,
+            )
+            from src.llm import get_llm_provider
+            warmup_provider = get_llm_provider(
+                "ollama",
+                model=config.ollama_model,
+                base_url=config.ollama_base_url,
+                timeout=config.ollama_warmup_timeout_seconds,
+                keep_alive=config.ollama_keep_alive,
+            )
+            warmup_res = await asyncio.to_thread(
+                warmup_provider.generate,
+                prompt="ping",
+                max_tokens=1,
+                temperature=0.0,
+            )
+            warmup_dur_ms = round((time.perf_counter() - warmup_start) * 1000.0, 2)
+            logger.info(
+                "Ollama startup warm-up successful for '%s' in %.2fms (load=%.2fms)",
+                config.ollama_model,
+                warmup_dur_ms,
+                warmup_res.load_duration_ms or 0.0,
+            )
+        except Exception as warmup_err:
+            warmup_dur_ms = round((time.perf_counter() - warmup_start) * 1000.0, 2)
+            logger.warning(
+                "Ollama startup warm-up for '%s' skipped or failed after %.2fms (service will continue): %s",
+                config.ollama_model,
+                warmup_dur_ms,
+                warmup_err,
+            )
 
     yield
 
@@ -84,7 +134,9 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.config = app_config
+    app.state.inference_gate_lock = asyncio.Lock()
     app.state.inference_semaphore = asyncio.Semaphore(app_config.max_concurrent_inferences)
+    app.state.active_inferences = 0
 
     # -------------------------------------------------------------------
     # CORS Middleware Configuration
@@ -220,13 +272,75 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
 
         return readiness
 
+    @app.get("/api/v1/stats", response_model=ScientificStatsResponse, tags=["Diagnostics"])
+    async def get_scientific_stats(request: Request):
+        """
+        Retrieves verified dataset statistics directly from the ARGO PostgreSQL database
+        via safe aggregate count queries using the dedicated read-only role.
+        """
+        config = getattr(request.app.state, "config", None) or get_config()
+        _verify_internal_auth(request, config)
+
+        try:
+            conn = get_db_connection(config)
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM argo_floats;")
+                floats = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM argo_profiles;")
+                profiles = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM argo_measurements;")
+                measurements = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM argo_doc_embeddings;")
+                chunks = cur.fetchone()[0]
+                cur.execute("""
+                    SELECT atttypmod
+                    FROM pg_attribute
+                    WHERE attrelid = 'argo_doc_embeddings'::regclass
+                      AND attname = 'embedding';
+                """)
+                dim_row = cur.fetchone()
+                dim = dim_row[0] if dim_row and dim_row[0] > 0 else config.expected_embedding_dimension
+            conn.close()
+
+            return ScientificStatsResponse(
+                total_floats=floats,
+                total_profiles=profiles,
+                total_measurements=measurements,
+                total_document_chunks=chunks,
+                embedding_dimension=dim,
+            )
+        except Exception as e:
+            logger.error(f"Failed to query scientific statistics: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Unable to retrieve scientific statistics from database."
+            )
+
+    def _verify_internal_auth(request: Request, config: Config):
+        """Validates the shared internal secret header if configured."""
+        expected_secret = config.internal_secret
+        if expected_secret:
+            provided_secret = request.headers.get("X-Internal-Secret", "")
+            if not provided_secret or not hmac.compare_digest(provided_secret, expected_secret):
+                logger.warning(
+                    "Unauthorized request to %s: Invalid or missing X-Internal-Secret header.",
+                    request.url.path,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or missing internal service secret.",
+                )
+
     async def _execute_chat_workflow(
         payload: ChatRequest,
         orchestrator: FloatChatOrchestrator,
         config: Config,
         request: Request,
     ) -> ChatResponse:
-        """Helper to invoke orchestrator with timeout and concurrency protection."""
+        """Helper to invoke orchestrator with authentication, concurrency gate, and worker lifecycle accounting."""
+        req_start = time.perf_counter()
+        _verify_internal_auth(request, config)
+
         if len(payload.query) > config.max_query_length:
             logger.warning(
                 "Query length (%d characters) exceeds configured maximum limit of %d characters",
@@ -238,32 +352,92 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
                 detail=f"Query length exceeds the maximum allowed limit of {config.max_query_length} characters.",
             )
 
-        sem: Optional[asyncio.Semaphore] = getattr(request.app.state, "inference_semaphore", None)
-        if sem is None:
-            sem = asyncio.Semaphore(config.max_concurrent_inferences)
-            request.app.state.inference_semaphore = sem
+        gate_lock: asyncio.Lock = getattr(request.app.state, "inference_gate_lock", None)
+        if gate_lock is None:
+            gate_lock = asyncio.Lock()
+            request.app.state.inference_gate_lock = gate_lock
 
-        if sem.locked():
-            logger.warning(
-                "AI inference concurrency limit reached (%d). Rejecting request with HTTP 429.",
-                config.max_concurrent_inferences,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="AI service is currently busy processing another request. Please try again shortly.",
-                headers={"Retry-After": str(config.inference_retry_after_seconds)},
-            )
+        # Atomic admission check & slot acquisition
+        async with gate_lock:
+            active = getattr(request.app.state, "active_inferences", 0)
+            sem = getattr(request.app.state, "inference_semaphore", None)
+            if active >= config.max_concurrent_inferences or (sem is not None and sem._value <= 0):
+                logger.warning(
+                    "AI inference concurrency limit reached (%d active >= %d max). Rejecting request with HTTP 429.",
+                    active,
+                    config.max_concurrent_inferences,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="AI service is currently busy processing another request. Please try again shortly.",
+                    headers={"Retry-After": str(config.inference_retry_after_seconds)},
+                )
+            request.app.state.active_inferences = active + 1
+            if sem is not None:
+                sem._value = max(0, sem._value - 1)
 
-        await sem.acquire()
+        slot_acquired = True
+
+        def _release_slot():
+            nonlocal slot_acquired
+            if slot_acquired:
+                active_now = getattr(request.app.state, "active_inferences", 1)
+                request.app.state.active_inferences = max(0, active_now - 1)
+                sem = getattr(request.app.state, "inference_semaphore", None)
+                if sem is not None:
+                    sem._value = min(config.max_concurrent_inferences, sem._value + 1)
+                slot_acquired = False
+                logger.info(
+                    "Inference worker completed. Active inferences remaining: %d",
+                    request.app.state.active_inferences,
+                )
+
+        # Create one CancellationToken per request for cooperative cancellation
+        cancellation_token = CancellationToken()
+
+        def _invoke_worker():
+            try:
+                return orchestrator.invoke(
+                    payload.query,
+                    payload.session_id,
+                    cancellation_token=cancellation_token,
+                )
+            except TypeError:
+                # Fallback for test mocks or legacy signatures that only accept (query, session_id)
+                return orchestrator.invoke(payload.query, payload.session_id)
+
+        # Launch worker in background thread
+        worker_task = asyncio.create_task(
+            asyncio.to_thread(_invoke_worker)
+        )
+
+        # Safe completion callback: consumes exceptions and guarantees single slot release
+        def _on_worker_done(fut: asyncio.Future):
+            try:
+                if not fut.cancelled():
+                    exc = fut.exception()
+                    if exc is not None:
+                        if isinstance(exc, WorkflowCancelledError):
+                            logger.info("Worker task exited cleanly following cooperative workflow cancellation.")
+                        else:
+                            logger.error(f"Unhandled exception in background worker task: {exc}", exc_info=exc)
+            except Exception as cb_err:
+                logger.warning(f"Error inspecting worker task completion: {cb_err}")
+            finally:
+                _release_slot()
+
+        # Ensure slot is released only when the thread worker finishes, preventing CPU overload
+        worker_task.add_done_callback(_on_worker_done)
+
         try:
-            # Run blocking orchestrator.invoke in thread pool with timeout
             state: FloatChatState = await asyncio.wait_for(
-                asyncio.to_thread(orchestrator.invoke, payload.query, payload.session_id),
+                asyncio.shield(worker_task),
                 timeout=config.request_timeout_seconds,
             )
         except asyncio.TimeoutError:
+            cancellation_token.cancel()
             logger.warning(
-                "Workflow timeout after %0.1fs for query length %d",
+                "Workflow timeout after %0.1fs for query length %d. Signalled cooperative cancellation to background worker.",
                 config.request_timeout_seconds,
                 len(payload.query),
             )
@@ -271,6 +445,10 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail=f"Query execution timed out after {config.request_timeout_seconds} seconds.",
             )
+        except asyncio.CancelledError:
+            cancellation_token.cancel()
+            logger.info("Request cancelled by client. Signalled cooperative cancellation to background worker.")
+            raise
         except HTTPException:
             raise
         except Exception as e:
@@ -279,8 +457,6 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Workflow execution encountered an internal error.",
             )
-        finally:
-            sem.release()
 
         # Build SQLMeta if database query was executed
         sql_meta = None
@@ -319,6 +495,15 @@ def create_app(config: Optional[Config] = None) -> FastAPI:
                 data_summary = DataSummary(**raw_summary)
             elif isinstance(raw_summary, DataSummary):
                 data_summary = raw_summary
+
+        total_req_ms = round((time.perf_counter() - req_start) * 1000.0, 2)
+        logger.info(
+            "AI Chat request completed in %.2fms [session=%s, intent=%s, status=%s]",
+            total_req_ms,
+            payload.session_id or "anonymous",
+            state.get("intent_type") or "UNKNOWN",
+            state.get("status") or "SUCCESS",
+        )
 
         return ChatResponse(
             session_id=state.get("session_id") or payload.session_id,

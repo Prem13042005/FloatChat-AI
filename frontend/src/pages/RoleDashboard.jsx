@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import api from "../services/api";
-import { getUser, logoutUser } from "../services/authService";
+import { useAuth } from "../context/AuthContext";
 import "./RoleDashboard.css";
 
 const DASHBOARD_CONFIG = {
@@ -38,8 +38,9 @@ const DASHBOARD_CONFIG = {
 };
 
 export default function RoleDashboard({ expectedRole }) {
-  const user = getUser();
-  const config = DASHBOARD_CONFIG[expectedRole];
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const config = DASHBOARD_CONFIG[expectedRole] || DASHBOARD_CONFIG.USER;
 
   const [serverData, setServerData] = useState(null);
   const [error, setError] = useState("");
@@ -71,8 +72,8 @@ export default function RoleDashboard({ expectedRole }) {
   }, [config.endpoint]);
 
   function handleLogout() {
-    logoutUser();
-    window.location.assign("/login");
+    logout();
+    navigate("/login", { replace: true });
   }
 
   return (
@@ -89,7 +90,7 @@ export default function RoleDashboard({ expectedRole }) {
       <section className="role-dashboard-welcome">
         <h2>Welcome, {user?.name || "User"}</h2>
         <p>
-          Account role: <strong>{user?.role}</strong>
+          Account role: <strong>{user?.role || expectedRole}</strong>
         </p>
       </section>
 

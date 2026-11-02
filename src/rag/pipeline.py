@@ -54,6 +54,7 @@ class DocumentIngestionPipeline:
                 model=self.config.embedding_model or "nomic-embed-text",
                 dimension=self.config.expected_embedding_dimension or 768,
                 timeout_seconds=self.config.ollama_timeout_seconds or 30.0,
+                keep_alive=getattr(self.config, "ollama_embedding_keep_alive", "5m"),
             )
 
     def process_document(

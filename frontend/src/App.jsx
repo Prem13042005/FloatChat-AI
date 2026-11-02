@@ -1,4 +1,5 @@
 import { Routes, Route, Navigate } from "react-router-dom";
+import { useAuth } from "./context/AuthContext";
 
 import Home from "./pages/Home";
 import About from "./pages/About";
@@ -14,6 +15,7 @@ import QueryHistory from "./pages/QueryHistory";
 import Visualizations from "./pages/Visualizations";
 import SystemAdministration from "./pages/SystemAdministration";
 import UserManagement from "./pages/UserManagement";
+import NotFound from "./pages/NotFound";
 
 import Navbar from "./components/Navbar";
 import ProtectedRoute from "./components/ProtectedRoute";
@@ -23,37 +25,52 @@ function AppLayout({ children }) {
   return (
     <>
       <Navbar />
-      <main>{children}</main>
+      {children}
     </>
   );
 }
 
 const ROLE_HOME = {
-  USER: "/dashboard/user",
+  USER: "/dashboard",
   ADMIN: "/dashboard/admin",
   SUPER_ADMIN: "/dashboard/super-admin",
 };
 
-function HomeRedirect() {
-  const token = localStorage.getItem("floatchat_token");
-  const savedUser = localStorage.getItem("floatchat_user");
+export function HomeRedirect() {
+  const { user, isAuthenticated, loading } = useAuth();
 
-  if (!token || !savedUser) {
-    return <AppLayout><Home /></AppLayout>;
-  }
-
-  try {
-    const user = JSON.parse(savedUser);
+  if (loading) {
     return (
-      <Navigate
-        to={ROLE_HOME[user.role] || "/login"}
-        replace
-      />
+      <div
+        className="auth-page"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          minHeight: "50vh",
+          color: "#64748b",
+          fontSize: "1rem",
+        }}
+      >
+        <div style={{ textAlign: "center" }}>
+          <p>Verifying session...</p>
+        </div>
+      </div>
     );
-  } catch {
-    localStorage.removeItem("floatchat_user");
-    return <Navigate to="/login" replace />;
   }
+
+  if (!isAuthenticated || !user) {
+    return (
+      <AppLayout>
+        <Home />
+      </AppLayout>
+    );
+  }
+
+  const role = String(user.role || "").toUpperCase();
+  const destination = ROLE_HOME[role] || "/dashboard";
+
+  return <Navigate to={destination} replace />;
 }
 
 export default function App() {
@@ -86,8 +103,18 @@ export default function App() {
         element={<ResetPassword />}
       />
 
-      {/* All authenticated users */}
+      {/* Common authenticated routes */}
       <Route element={<ProtectedRoute />}>
+        <Route
+          path="/dashboard"
+          element={<AppLayout><Dashboard /></AppLayout>}
+        />
+
+        <Route
+          path="/dashboard/user"
+          element={<AppLayout><Dashboard /></AppLayout>}
+        />
+
         <Route
           path="/chat"
           element={<AppLayout><Chat /></AppLayout>}
@@ -104,16 +131,13 @@ export default function App() {
         />
 
         <Route
+          path="/history"
+          element={<Navigate to="/query-history" replace />}
+        />
+
+        <Route
           path="/visualizations"
           element={<AppLayout><Visualizations /></AppLayout>}
-        />
-      </Route>
-
-      {/* User dashboard */}
-      <Route element={<ProtectedRoute allowedRoles={["USER"]} />}>
-        <Route
-          path="/dashboard/user"
-          element={<RoleDashboard expectedRole="USER" />}
         />
       </Route>
 
@@ -121,7 +145,7 @@ export default function App() {
       <Route element={<ProtectedRoute allowedRoles={["ADMIN", "SUPER_ADMIN"]} />}>
         <Route
           path="/dashboard/admin"
-          element={<RoleDashboard expectedRole="ADMIN" />}
+          element={<AppLayout><RoleDashboard expectedRole="ADMIN" /></AppLayout>}
         />
 
         <Route
@@ -133,28 +157,23 @@ export default function App() {
           path="/user-management"
           element={<AppLayout><UserManagement /></AppLayout>}
         />
+
+        <Route
+          path="/admin/users"
+          element={<Navigate to="/user-management" replace />}
+        />
       </Route>
 
       {/* Super Admin dashboard */}
       <Route element={<ProtectedRoute allowedRoles={["SUPER_ADMIN"]} />}>
         <Route
           path="/dashboard/super-admin"
-          element={<RoleDashboard expectedRole="SUPER_ADMIN" />}
+          element={<AppLayout><RoleDashboard expectedRole="SUPER_ADMIN" /></AppLayout>}
         />
       </Route>
 
-      {/* Keep old dashboard URL working */}
-      <Route
-        path="/dashboard"
-        element={
-          <ProtectedRoute>
-            <Navigate to="/" replace />
-          </ProtectedRoute>
-        }
-      />
-
-      {/* Unknown URLs */}
-      <Route path="*" element={<Navigate to="/" replace />} />
+      {/* Unknown URLs fallback */}
+      <Route path="*" element={<AppLayout><NotFound /></AppLayout>} />
     </Routes>
   );
 }

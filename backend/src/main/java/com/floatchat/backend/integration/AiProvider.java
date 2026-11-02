@@ -14,6 +14,19 @@ public interface AiProvider {
 
     AiAnswer answer(String question, String sessionId);
 
+    default ScientificStats getScientificStats() {
+        return null;
+    }
+
+    record ScientificStats(
+        Long totalFloats,
+        Long totalProfiles,
+        Long totalMeasurements,
+        Long totalDocumentChunks,
+        Integer embeddingDimension
+    ) {
+    }
+
     record AiAnswer(
         String answer,
         boolean demo,

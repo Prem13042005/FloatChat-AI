@@ -12,6 +12,8 @@ Enforces:
 """
 
 import json
+import logging
+import time
 from typing import Any, Callable, Dict, List, Optional
 import psycopg2
 from psycopg2 import extensions
@@ -20,6 +22,8 @@ from src.config import Config, get_config
 from src.database.connection import get_db_connection
 from src.rag.exceptions import IncompatibleVectorEnvironmentError, StorageError
 from src.rag.models import DocumentChunk, IngestionReport, RetrievedChunk
+
+logger = logging.getLogger("floatchat.rag.storage")
 
 
 class DocumentVectorStore:
@@ -41,18 +45,51 @@ class DocumentVectorStore:
         """
         self.config = config or get_config()
         self.connection_factory = connection_factory or get_db_connection
+        self._environment_cache: Dict[str, Dict[str, Any]] = {}
+
+    def _get_db_identity(self, conn: Optional[extensions.connection] = None) -> str:
+        """
+        Derives a unique string identity for the target database connection.
+        Used to prevent stale cache reuse across different database instances or configurations.
+        """
+        if conn is not None and hasattr(conn, "get_dsn_parameters"):
+            try:
+                params = conn.get_dsn_parameters()
+                if isinstance(params, dict) and params:
+                    host = params.get("host", self.config.postgres_host)
+                    port = params.get("port", self.config.postgres_port)
+                    dbname = params.get("dbname", self.config.postgres_db)
+                    user = params.get("user", self.config.postgres_user)
+                    return f"{user}@{host}:{port}/{dbname}"
+            except Exception:
+                pass
+        return f"{self.config.postgres_user}@{self.config.postgres_host}:{self.config.postgres_port}/{self.config.postgres_db}"
+
+    def clear_environment_cache(self) -> None:
+        """Clears all cached database vector environment capabilities."""
+        self._environment_cache.clear()
 
     def check_database_environment(
         self,
         conn: Optional[extensions.connection] = None,
+        force_refresh: bool = False,
     ) -> Dict[str, Any]:
         """
         Inspects the target PostgreSQL database to determine pgvector extension status,
         table existence, embedding column existence, and declared vector dimension.
+        Caches successful checks by database connection identity.
+
+        Args:
+            conn: Optional active database connection.
+            force_refresh: If True, bypasses cache and re-queries catalogs.
 
         Returns:
             Dictionary with environment capabilities.
         """
+        db_key = self._get_db_identity(conn)
+        if not force_refresh and db_key in self._environment_cache:
+            return dict(self._environment_cache[db_key])
+
         should_close = False
         if conn is None:
             conn = self.connection_factory(self.config)
@@ -95,12 +132,15 @@ class DocumentVectorStore:
                 except Exception:
                     pass
 
-            return {
+            capabilities = {
                 "pgvector_extension_available": pgvector_installed,
                 "table_exists": table_exists,
                 "embedding_column_exists": column_exists,
                 "expected_column_dimension": column_dimension or self.config.expected_embedding_dimension,
             }
+            # Cache only successfully verified capability results
+            self._environment_cache[db_key] = dict(capabilities)
+            return capabilities
         finally:
             cur.close()
             if should_close:
@@ -141,8 +181,8 @@ class DocumentVectorStore:
 
         cur = None
         try:
-            # Step 1: Verify database vector capabilities
-            env = self.check_database_environment(conn)
+            # Step 1: Verify database vector capabilities (fresh verification for batch ingestion)
+            env = self.check_database_environment(conn, force_refresh=True)
             report.db_pgvector_available = env["pgvector_extension_available"]
 
             has_embeddings = any(c.embedding is not None for c in chunks)
@@ -287,7 +327,19 @@ class DocumentVectorStore:
 
         cur = None
         try:
-            # Step 1: Verify database vector capabilities
+            # Enforce non-autocommit for strict read-only transaction scope
+            conn.autocommit = False
+            try:
+                conn.set_session(readonly=True)
+            except Exception:
+                pass
+
+            cur = conn.cursor()
+
+            # Apply read-only statement timeout of 5000ms inside the active transaction
+            cur.execute("SET LOCAL statement_timeout = 5000;")
+
+            # Step 1: Verify database vector capabilities (uses cached capability checks)
             env = self.check_database_environment(conn)
             if not env["pgvector_extension_available"] or not env["embedding_column_exists"]:
                 raise IncompatibleVectorEnvironmentError(
@@ -315,8 +367,7 @@ class DocumentVectorStore:
                     section_title,
                     chunk_content,
                     metadata,
-                    ROUND((1 - (embedding <=> %(vector)s::vector))::numeric, 6) AS similarity_score,
-                    ROUND((embedding <=> %(vector)s::vector)::numeric, 6) AS distance
+                    ROUND((1 - (embedding <=> %(vector)s::vector))::numeric, 6) AS similarity_score
                 FROM argo_doc_embeddings
                 WHERE embedding IS NOT NULL
                   AND (1 - (embedding <=> %(vector)s::vector)) >= %(threshold)s
@@ -329,13 +380,21 @@ class DocumentVectorStore:
                 "limit": top_k,
             }
 
-            cur = conn.cursor()
+            t0 = time.perf_counter()
             cur.execute(query, params)
             rows = cur.fetchall()
+            search_duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
 
             results: List[RetrievedChunk] = []
             for row in rows:
-                chunk_id, doc_title, sec_title, content, raw_meta, sim_score, dist = row
+                if len(row) >= 7:
+                    chunk_id, doc_title, sec_title, content, raw_meta, sim_score, raw_dist = row[:7]
+                    sim_val = float(sim_score)
+                    dist_val = float(raw_dist) if raw_dist is not None else round(1.0 - sim_val, 6)
+                else:
+                    chunk_id, doc_title, sec_title, content, raw_meta, sim_score = row[:6]
+                    sim_val = float(sim_score)
+                    dist_val = round(1.0 - sim_val, 6)
                 
                 # Parse metadata safely if stored as JSON string
                 if isinstance(raw_meta, str):
@@ -354,17 +413,35 @@ class DocumentVectorStore:
                         document_title=doc_title,
                         section_title=sec_title,
                         chunk_content=content,
-                        similarity_score=float(sim_score),
-                        distance=float(dist) if dist is not None else None,
+                        similarity_score=sim_val,
+                        distance=dist_val,
                         metadata=meta,
                     )
                 )
 
+            # Commit the read-only transaction cleanly
+            conn.commit()
+
+            logger.info(
+                "Vector similarity search completed in %.2fms [top_k=%d, threshold=%.2f, found=%d]",
+                search_duration_ms,
+                top_k,
+                similarity_threshold,
+                len(results),
+            )
             return results
 
         except IncompatibleVectorEnvironmentError:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             raise
         except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             raise StorageError(f"Database error during similarity search: {str(e)}") from e
         finally:
             if cur is not None:

@@ -1,11 +1,13 @@
-
 import api, {
   loginUser,
   signupUser,
 } from "./api.js";
 
+export { subscribeAuthEvent, emitAuthEvent, AUTH_EVENTS } from "./authEvents.js";
+
 const TOKEN_KEY = "floatchat_token";
 const USER_KEY = "floatchat_user";
+const ACTIVE_CONVERSATION_KEY = "floatchat_active_conversation_id";
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -36,6 +38,11 @@ export function saveAuth(response) {
   localStorage.setItem(TOKEN_KEY, response.token);
   localStorage.setItem(USER_KEY, JSON.stringify(response.user));
 
+  // Purge any active conversation from a previous session to ensure isolation
+  if (typeof sessionStorage !== "undefined") {
+    sessionStorage.removeItem(ACTIVE_CONVERSATION_KEY);
+  }
+
   return response.user;
 }
 
@@ -65,6 +72,11 @@ export async function register(userData) {
 export function logout() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+
+  // Clear active conversation session while preserving unrelated application preferences
+  if (typeof sessionStorage !== "undefined") {
+    sessionStorage.removeItem(ACTIVE_CONVERSATION_KEY);
+  }
 }
 
 export const clearAuth = logout;

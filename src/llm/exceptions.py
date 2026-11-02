@@ -7,6 +7,9 @@ ensuring future AI agents do not depend on provider-specific exception classes.
 """
 
 
+from typing import Optional
+
+
 class LLMProviderError(Exception):
     """Base exception for all LLM provider errors."""
     pass
@@ -29,7 +32,18 @@ class LLMResponseError(LLMProviderError):
 
 class LLMStructuredOutputError(LLMProviderError):
     """Raised when structured JSON generation or Pydantic parsing/validation fails."""
-    pass
+
+    def __init__(
+        self,
+        message: str,
+        raw_text: Optional[str] = None,
+        finish_reason: Optional[str] = None,
+        response_model_name: Optional[str] = None,
+    ):
+        super().__init__(message)
+        self.raw_text = raw_text
+        self.finish_reason = finish_reason
+        self.response_model_name = response_model_name
 
 
 class LLMConfigurationError(LLMProviderError):

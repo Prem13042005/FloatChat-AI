@@ -96,6 +96,9 @@ ALL_ALLOWED_COLUMNS: Set[str] = set().union(*ALLOWED_COLUMNS_BY_TABLE.values())
 # Standard aggregate / scalar functions allowed in observation analytics
 ALLOWED_STANDARD_FUNCTIONS: Set[str] = {
     "count", "avg", "min", "max", "sum",
+    "stddev", "stddev_samp", "stddev_pop",
+    "variance", "variance_pop", "var_samp", "var_pop",
+    "percentile_cont",
     "coalesce", "round", "date_trunc", "extract", "cast",
     "to_char", "now", "current_timestamp", "abs", "floor", "ceil"
 }
@@ -247,6 +250,16 @@ class DeterministicSQLValidator:
                 errors=function_errors,
             )
 
+        # Step 7b: Ordered-Set Aggregate & WITHIN GROUP Validation
+        ordered_set_errors = self._validate_ordered_set_aggregates(ast)
+        if ordered_set_errors:
+            return SQLValidationResult(
+                valid=False,
+                original_sql=sql,
+                error_code=ValidationErrorCode.UNSAFE_CONSTRUCT,
+                errors=ordered_set_errors,
+            )
+
         # Step 8: Mandatory LIMIT Policy Enforcement (Transformation)
         ast_transformed, limit_warning = self._enforce_limit_policy(ast)
 
@@ -262,8 +275,34 @@ class DeterministicSQLValidator:
 
     def _check_dangerous_constructs(self, ast: exp.Expression) -> Optional[str]:
         """
-        Inspects AST for dangerous constructs (SELECT INTO, COPY, EXECUTE, system catalog queries).
+        Inspects AST for dangerous constructs:
+        - Data-modifying statements (INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE) in CTEs or subqueries
+        - SELECT INTO, COPY, EXECUTE
+        - System catalog / information schema queries
+        - Transaction / session state control
         """
+        # Reject data-modifying / DDL / session statements anywhere in the AST
+        forbidden_classes = (
+            exp.Delete,
+            exp.Update,
+            exp.Insert,
+            exp.Drop,
+            exp.Alter,
+            exp.Command,
+            exp.Create,
+            exp.TruncateTable,
+            exp.Transaction,
+            exp.Commit,
+            exp.Rollback,
+        )
+        for node in ast.find_all(forbidden_classes):
+            node_name = node.key.upper() if hasattr(node, "key") and node.key else type(node).__name__
+            return f"Forbidden construct: Statement contains '{node_name}' which modifies data, schema, or session state."
+
+        # Reject window functions (OVER clauses)
+        if ast.find(exp.Window):
+            return "Forbidden construct: Window functions (OVER clauses) are not permitted in this phase."
+
         # Reject SELECT ... INTO
         if ast.find(exp.Into):
             return "Forbidden construct: SELECT INTO statement is not permitted."
@@ -371,11 +410,72 @@ class DeterministicSQLValidator:
 
         return errors
 
+    def _validate_ordered_set_aggregates(self, ast: exp.Expression) -> List[str]:
+        """
+        Validates ordered-set aggregates (such as PERCENTILE_CONT) and their WITHIN GROUP clauses.
+        Enforces:
+        - PERCENTILE_CONT must be directly contained within a WITHIN GROUP clause.
+        - PERCENTILE_CONT argument must be a constant numeric literal between 0.0 and 1.0.
+        - WITHIN GROUP clause must only be used with allowed ordered-set aggregates (PERCENTILE_CONT).
+        - WITHIN GROUP clause must contain an ORDER BY clause with exactly one sort expression.
+        """
+        errors = []
+
+        # Validate all PERCENTILE_CONT function calls
+        for pc in ast.find_all(exp.PercentileCont):
+            if not isinstance(pc.parent, exp.WithinGroup):
+                errors.append(
+                    "PERCENTILE_CONT is an ordered-set aggregate and requires a WITHIN GROUP (ORDER BY ...) clause."
+                )
+
+            arg = pc.this
+            val = None
+            if isinstance(arg, exp.Literal) and arg.is_number:
+                try:
+                    val = float(arg.this)
+                except (ValueError, TypeError):
+                    val = None
+            elif isinstance(arg, exp.Neg) and isinstance(arg.this, exp.Literal) and arg.this.is_number:
+                try:
+                    val = -float(arg.this.this)
+                except (ValueError, TypeError):
+                    val = None
+
+            if val is None:
+                arg_str = arg.sql(dialect="postgres") if arg is not None else "None"
+                errors.append(
+                    f"PERCENTILE_CONT argument must be a constant numeric literal between 0.0 and 1.0, got '{arg_str}'."
+                )
+            elif not (0.0 <= val <= 1.0):
+                errors.append(
+                    f"PERCENTILE_CONT percentile value {val} is out of bounds. Must be between 0.0 and 1.0."
+                )
+
+        # Validate all WITHIN GROUP clauses
+        for wg in ast.find_all(exp.WithinGroup):
+            if not isinstance(wg.this, exp.PercentileCont):
+                fn_name = wg.this.sql(dialect="postgres") if wg.this is not None else "unknown"
+                errors.append(
+                    f"Unauthorized ordered-set aggregate '{fn_name}'. Only PERCENTILE_CONT is permitted with WITHIN GROUP."
+                )
+
+            if not isinstance(wg.expression, exp.Order):
+                errors.append("WITHIN GROUP clause must contain an ORDER BY expression.")
+            elif not wg.expression.expressions:
+                errors.append("WITHIN GROUP (ORDER BY ...) requires an order expression.")
+            elif len(wg.expression.expressions) > 1:
+                errors.append(
+                    "PERCENTILE_CONT ordered-set aggregate takes exactly one sort expression in ORDER BY."
+                )
+
+        return errors
+
     def _enforce_limit_policy(self, ast: exp.Select) -> tuple[exp.Select, Optional[str]]:
         """
         Applies mandatory LIMIT policy via AST transformation:
-        - Injects LIMIT auto_limit if query has no LIMIT clause.
-        - Caps existing LIMIT at max_limit if it exceeds max_limit.
+        - Injects LIMIT auto_limit if query has no LIMIT or FETCH clause.
+        - Caps existing LIMIT or FETCH count at max_limit if it exceeds max_limit.
+        - Replaces non-positive, NULL, or malformed limits with auto_limit.
         """
         ast_copy = ast.copy()
         limit_node = ast_copy.args.get("limit")
@@ -385,19 +485,73 @@ class DeterministicSQLValidator:
             warning = f"No LIMIT clause specified. Injected default safety LIMIT {self.auto_limit}."
             return ast_copy, warning
 
-        # Inspect existing LIMIT value
-        try:
+        # Case 1: exp.Limit (e.g. LIMIT 50, LIMIT NULL, LIMIT -1, LIMIT 5000)
+        if isinstance(limit_node, exp.Limit):
             limit_val_expr = limit_node.expression
-            if isinstance(limit_val_expr, exp.Literal):
-                val = int(limit_val_expr.this)
-                if val > self.max_limit:
-                    ast_copy = ast_copy.limit(self.max_limit)
-                    warning = f"Requested LIMIT {val} exceeded maximum threshold ({self.max_limit}). Capped LIMIT to {self.max_limit}."
-                    return ast_copy, warning
-        except Exception:
-            pass
+            if limit_val_expr is None or isinstance(limit_val_expr, exp.Null):
+                ast_copy = ast_copy.limit(self.auto_limit)
+                warning = f"LIMIT was NULL or empty. Replaced with default safety LIMIT {self.auto_limit}."
+                return ast_copy, warning
 
-        return ast_copy, None
+            if isinstance(limit_val_expr, exp.Neg):
+                ast_copy = ast_copy.limit(self.auto_limit)
+                warning = f"Negative LIMIT is invalid. Replaced with default safety LIMIT {self.auto_limit}."
+                return ast_copy, warning
+
+            if isinstance(limit_val_expr, exp.Literal):
+                try:
+                    val = int(limit_val_expr.this)
+                    if val <= 0:
+                        ast_copy = ast_copy.limit(self.auto_limit)
+                        warning = f"Non-positive LIMIT {val} is invalid. Replaced with default safety LIMIT {self.auto_limit}."
+                        return ast_copy, warning
+                    if val > self.max_limit:
+                        ast_copy = ast_copy.limit(self.max_limit)
+                        warning = f"Requested LIMIT {val} exceeded maximum threshold ({self.max_limit}). Capped LIMIT to {self.max_limit}."
+                        return ast_copy, warning
+                    return ast_copy, None
+                except (ValueError, TypeError):
+                    ast_copy = ast_copy.limit(self.auto_limit)
+                    warning = f"Invalid LIMIT literal. Replaced with default safety LIMIT {self.auto_limit}."
+                    return ast_copy, warning
+
+            # Non-literal or complex expression
+            ast_copy = ast_copy.limit(self.auto_limit)
+            warning = f"Complex non-literal LIMIT expression replaced with default safety LIMIT {self.auto_limit}."
+            return ast_copy, warning
+
+        # Case 2: exp.Fetch (e.g. FETCH FIRST 5000 ROWS ONLY)
+        if isinstance(limit_node, exp.Fetch):
+            count_expr = limit_node.args.get("count")
+            if count_expr is None:
+                # FETCH FIRST ROWS ONLY implies 1 row
+                return ast_copy, None
+
+            if isinstance(count_expr, exp.Literal):
+                try:
+                    val = int(count_expr.this)
+                    if val <= 0:
+                        ast_copy = ast_copy.limit(self.auto_limit)
+                        warning = f"Non-positive FETCH count {val} is invalid. Replaced with LIMIT {self.auto_limit}."
+                        return ast_copy, warning
+                    if val > self.max_limit:
+                        ast_copy = ast_copy.limit(self.max_limit)
+                        warning = f"Requested FETCH count {val} exceeded maximum threshold ({self.max_limit}). Capped LIMIT to {self.max_limit}."
+                        return ast_copy, warning
+                    return ast_copy, None
+                except (ValueError, TypeError):
+                    ast_copy = ast_copy.limit(self.auto_limit)
+                    warning = f"Invalid FETCH count literal. Replaced with LIMIT {self.auto_limit}."
+                    return ast_copy, warning
+            else:
+                ast_copy = ast_copy.limit(self.auto_limit)
+                warning = f"Complex FETCH expression replaced with default safety LIMIT {self.auto_limit}."
+                return ast_copy, warning
+
+        # Fallback for any other limit node
+        ast_copy = ast_copy.limit(self.auto_limit)
+        warning = f"Unrecognized LIMIT/FETCH construct. Replaced with default safety LIMIT {self.auto_limit}."
+        return ast_copy, warning
 
 
 # Singleton instance for quick module-level imports

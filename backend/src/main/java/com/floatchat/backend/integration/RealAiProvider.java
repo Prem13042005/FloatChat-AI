@@ -48,7 +48,8 @@ public class RealAiProvider implements AiProvider {
     public RealAiProvider(
         @Value("${ai.service.url:http://127.0.0.1:8000}") String aiServiceUrl,
         @Value("${ai.service.connect-timeout-ms:3000}") int connectTimeoutMs,
-        @Value("${ai.service.read-timeout-ms:100000}") int readTimeoutMs
+        @Value("${ai.service.read-timeout-ms:100000}") int readTimeoutMs,
+        @Value("${ai.service.internal-secret:}") String internalSecret
     ) {
         HttpClient httpClient = HttpClient.newBuilder()
             .version(HttpClient.Version.HTTP_1_1)
@@ -58,18 +59,28 @@ public class RealAiProvider implements AiProvider {
         JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
         requestFactory.setReadTimeout(Duration.ofMillis(readTimeoutMs));
 
-        this.restClient = RestClient.builder()
+        RestClient.Builder clientBuilder = RestClient.builder()
             .baseUrl(aiServiceUrl)
-            .requestFactory(requestFactory)
-            .build();
+            .requestFactory(requestFactory);
+
+        if (internalSecret != null && !internalSecret.trim().isEmpty()) {
+            clientBuilder.defaultHeader("X-Internal-Secret", internalSecret.trim());
+        }
+
+        this.restClient = clientBuilder.build();
 
         JdkClientHttpRequestFactory healthRequestFactory = new JdkClientHttpRequestFactory(httpClient);
         healthRequestFactory.setReadTimeout(Duration.ofMillis(2000));
 
-        this.healthRestClient = RestClient.builder()
+        RestClient.Builder healthClientBuilder = RestClient.builder()
             .baseUrl(aiServiceUrl)
-            .requestFactory(healthRequestFactory)
-            .build();
+            .requestFactory(healthRequestFactory);
+
+        if (internalSecret != null && !internalSecret.trim().isEmpty()) {
+            healthClientBuilder.defaultHeader("X-Internal-Secret", internalSecret.trim());
+        }
+
+        this.healthRestClient = healthClientBuilder.build();
     }
 
     // Constructor for testing with mock RestClients
@@ -148,6 +159,29 @@ public class RealAiProvider implements AiProvider {
         }
     }
 
+    @Override
+    public ScientificStats getScientificStats() {
+        try {
+            com.floatchat.backend.dto.python.PythonScientificStatsResponse stats = healthRestClient.get()
+                .uri("/api/v1/stats")
+                .retrieve()
+                .body(com.floatchat.backend.dto.python.PythonScientificStatsResponse.class);
+
+            if (stats != null) {
+                return new ScientificStats(
+                    stats.totalFloats(),
+                    stats.totalProfiles(),
+                    stats.totalMeasurements(),
+                    stats.totalDocumentChunks(),
+                    stats.embeddingDimension()
+                );
+            }
+        } catch (Exception e) {
+            log.warn("Failed to retrieve scientific statistics from Python AI service: {}", e.getMessage());
+        }
+        return null;
+    }
+
     private AiAnswer mapToAiAnswer(PythonChatResponse response) {
         String answerText = response.answer() != null ? response.answer() : "No answer returned.";
         String sql = response.sqlMeta() != null ? response.sqlMeta().generatedSql() : null;
@@ -192,7 +226,8 @@ public class RealAiProvider implements AiProvider {
                 vs.title(),
                 vs.invertY(),
                 vs.seriesColumn(),
-                vs.description()
+                vs.description(),
+                vs.data() != null ? vs.data() : List.of()
             );
         }
 

@@ -28,7 +28,10 @@ from unittest.mock import MagicMock, patch
 # Ensure src is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from src.agents.query_understanding.models import IntentType, QueryIntent
+from src.agents.response.agent import ScientificResponseAgent
 from src.config import Config
+from src.orchestration.graph import FloatChatOrchestrator
 from src.rag import (
     EmbeddingGenerationError,
     IncompatibleVectorEnvironmentError,
@@ -515,6 +518,262 @@ class TestRAGRetrieval(unittest.TestCase):
 
         except Exception as e:
             self.skipTest(f"Live database or Ollama service not reachable: {str(e)}")
+
+
+    def test_16_similarity_search_and_retrieval_logging(self):
+        """Verify that vector similarity search and retriever log execution timing and preserve return chunks."""
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value = mock_cur
+
+        # check_database_environment calls fetchone
+        mock_cur.fetchone.side_effect = [
+            (1,), (1,), ("embedding", "vector"), (768,)
+        ]
+        # similarity_search query returns rows
+        mock_cur.fetchall.return_value = [
+            (
+                101,
+                "ARGO User Manual",
+                "Quality Flags",
+                "Flag 1 indicates good data.",
+                json.dumps({"section": 2.1}),
+                0.92,
+                0.08,
+            )
+        ]
+
+        store = DocumentVectorStore(config=self.config, connection_factory=lambda cfg: mock_conn)
+        retriever = ScientificDocumentRetriever(
+            config=self.config,
+            embedding_provider=self.mock_provider,
+            vector_store=store,
+        )
+
+        with self.assertLogs("floatchat.rag.storage", level="INFO") as log_storage, \
+             self.assertLogs("floatchat.rag.retriever", level="INFO") as log_retriever:
+            res = retriever.retrieve("How are quality flags assigned?")
+
+        self.assertEqual(res.status, "success")
+        self.assertEqual(len(res.chunks), 1)
+        self.assertEqual(res.chunks[0].chunk_id, 101)
+        self.assertEqual(res.chunks[0].document_title, "ARGO User Manual")
+        self.assertEqual(res.chunks[0].similarity_score, 0.92)
+
+        # Check storage log
+        storage_log_str = " ".join(log_storage.output)
+        self.assertIn("Vector similarity search completed in", storage_log_str)
+        self.assertIn("top_k=4", storage_log_str)
+        self.assertIn("threshold=0.70", storage_log_str)
+        self.assertIn("found=1", storage_log_str)
+
+        # Check retriever log
+        retriever_log_str = " ".join(log_retriever.output)
+        self.assertIn("Scientific document retrieval completed in", retriever_log_str)
+        self.assertIn("chunks=1", retriever_log_str)
+        self.assertIn("status=success", retriever_log_str)
+
+    # ===================================================================
+    # 17. Stage 4B: Capability Caching & Optimization Tests
+    # ===================================================================
+
+    def test_17_capability_caching_first_call_and_subsequent_reuse(self):
+        """Verify check_database_environment executes queries on first call and reuses cache subsequently."""
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value = mock_cur
+        mock_conn.get_dsn_parameters.return_value = {
+            "host": "localhost", "port": "5432", "dbname": "floatchat_db", "user": "floatchat_user"
+        }
+
+        mock_cur.fetchone.side_effect = [
+            (1,), (1,), ("embedding", "vector"), (768,)
+        ]
+
+        store = DocumentVectorStore(config=self.config, connection_factory=lambda cfg: mock_conn)
+        
+        # First call: executes 4 catalog queries
+        env1 = store.check_database_environment(mock_conn)
+        self.assertTrue(env1["pgvector_extension_available"])
+        self.assertEqual(env1["expected_column_dimension"], 768)
+        self.assertEqual(mock_cur.execute.call_count, 4)
+
+        # Second call: reuses cached dictionary without executing any additional queries
+        env2 = store.check_database_environment(mock_conn)
+        self.assertEqual(env2, env1)
+        self.assertEqual(mock_cur.execute.call_count, 4)  # Still 4!
+
+    def test_18_capability_cache_clearing(self):
+        """Verify clear_environment_cache forces re-execution of catalog queries."""
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value = mock_cur
+        mock_conn.get_dsn_parameters.return_value = {
+            "host": "localhost", "port": "5432", "dbname": "floatchat_db", "user": "floatchat_user"
+        }
+
+        mock_cur.fetchone.side_effect = [
+            (1,), (1,), ("embedding", "vector"), (768,),
+            (1,), (1,), ("embedding", "vector"), (768,),
+        ]
+
+        store = DocumentVectorStore(config=self.config, connection_factory=lambda cfg: mock_conn)
+        env1 = store.check_database_environment(mock_conn)
+        self.assertEqual(mock_cur.execute.call_count, 4)
+
+        # Clear cache and verify fresh queries
+        store.clear_environment_cache()
+        env2 = store.check_database_environment(mock_conn)
+        self.assertEqual(mock_cur.execute.call_count, 8)
+
+    def test_19_capability_cache_failure_not_cached(self):
+        """Verify failed checks (exceptions) are not stored in the cache."""
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value = mock_cur
+        mock_cur.execute.side_effect = Exception("Connection severed")
+
+        store = DocumentVectorStore(config=self.config, connection_factory=lambda cfg: mock_conn)
+        with self.assertRaises(Exception):
+            store.check_database_environment(mock_conn)
+
+        self.assertEqual(len(store._environment_cache), 0)
+
+    def test_20_capability_cache_different_db_identity(self):
+        """Verify different database identities use distinct cache entries."""
+        mock_conn1 = MagicMock()
+        mock_cur1 = MagicMock()
+        mock_conn1.cursor.return_value = mock_cur1
+        mock_conn1.get_dsn_parameters.return_value = {"host": "h1", "port": "5432", "dbname": "db1", "user": "u1"}
+        mock_cur1.fetchone.side_effect = [(1,), (1,), ("embedding", "vector"), (768,)]
+
+        mock_conn2 = MagicMock()
+        mock_cur2 = MagicMock()
+        mock_conn2.cursor.return_value = mock_cur2
+        mock_conn2.get_dsn_parameters.return_value = {"host": "h2", "port": "5432", "dbname": "db2", "user": "u2"}
+        mock_cur2.fetchone.side_effect = [(1,), (1,), ("embedding", "vector"), (1536,)]
+
+        store = DocumentVectorStore(config=self.config)
+        env1 = store.check_database_environment(mock_conn1)
+        env2 = store.check_database_environment(mock_conn2)
+
+        self.assertEqual(env1["expected_column_dimension"], 768)
+        self.assertEqual(env2["expected_column_dimension"], 1536)
+        self.assertEqual(len(store._environment_cache), 2)
+
+    def test_21_similarity_search_read_only_and_statement_timeout(self):
+        """Verify similarity_search enforces read-only session and SET LOCAL statement_timeout = 5000."""
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value = mock_cur
+        mock_cur.fetchone.side_effect = [(1,), (1,), ("embedding", "vector"), (768,)]
+        mock_cur.fetchall.return_value = [
+            (1, "Doc", "Sec", "Content", "{}", 0.85)
+        ]
+
+        store = DocumentVectorStore(config=self.config, connection_factory=lambda cfg: mock_conn)
+        results = store.similarity_search([0.01] * 768)
+
+        self.assertEqual(len(results), 1)
+        self.assertFalse(mock_conn.autocommit)
+        mock_conn.set_session.assert_called_with(readonly=True)
+        # Check SET LOCAL statement_timeout executed
+        timeout_calls = [
+            call for call in mock_cur.execute.call_args_list 
+            if "statement_timeout" in str(call)
+        ]
+        self.assertTrue(len(timeout_calls) >= 1)
+        self.assertIn("5000", str(timeout_calls[0]))
+        mock_conn.commit.assert_called_once()
+
+    def test_22_similarity_search_transaction_rollback_on_error(self):
+        """Verify similarity_search performs transaction rollback on query failure."""
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value = mock_cur
+        mock_cur.fetchone.side_effect = [(1,), (1,), ("embedding", "vector"), (768,)]
+        mock_cur.fetchall.side_effect = Exception("Query execution error")
+
+        store = DocumentVectorStore(config=self.config, connection_factory=lambda cfg: mock_conn)
+        with self.assertRaises(StorageError):
+            store.similarity_search([0.01] * 768)
+
+        mock_conn.rollback.assert_called_once()
+
+    def test_23_rag_trigger_data_only_skips_retrieval(self):
+        """Verify ScientificResponseAgent skips retrieval for DATA_ONLY queries even with generic interrogative words."""
+        agent = ScientificResponseAgent(config=self.config)
+        data_intent = QueryIntent(
+            query="What is the average temperature in the Arabian Sea in January 2024?",
+            intent_type=IntentType.DATA_ONLY,
+            is_supported=True,
+        )
+
+        # "What", "how", "explain" must not trigger retrieval for DATA_ONLY
+        self.assertFalse(agent._should_retrieve_docs("What is the average temperature in 2024?", data_intent))
+        self.assertFalse(agent._should_retrieve_docs("How many floats are stored?", data_intent))
+        self.assertFalse(agent._should_retrieve_docs("Explain the observations from 2024", data_intent))
+
+    def test_24_rag_trigger_knowledge_and_hybrid_invokes_retrieval(self):
+        """Verify ScientificResponseAgent performs retrieval for KNOWLEDGE_ONLY and HYBRID queries."""
+        agent = ScientificResponseAgent(config=self.config)
+        knowledge_intent = QueryIntent(
+            query="Explain the role of CTD sensors in measuring salinity.",
+            intent_type=IntentType.KNOWLEDGE_ONLY,
+            is_supported=True,
+        )
+        hybrid_intent = QueryIntent(
+            query="Explain ocean stratification and show related measurements from 2024.",
+            intent_type=IntentType.HYBRID,
+            is_supported=True,
+        )
+
+        self.assertTrue(agent._should_retrieve_docs("Explain the role of CTD sensors", knowledge_intent))
+        self.assertTrue(agent._should_retrieve_docs("Explain ocean stratification and show data", hybrid_intent))
+        self.assertTrue(agent._should_retrieve_docs("General inquiry without intent", None))
+
+    def test_25_hybrid_workflow_routing_and_execution_intact(self):
+        """Verify HYBRID workflow routing fans out concurrently to data and retrieval branches."""
+        orchestrator = FloatChatOrchestrator(config=self.config)
+        
+        # Test routing decision
+        hybrid_state = {"intent": QueryIntent(query="hybrid", intent_type=IntentType.HYBRID, is_supported=True)}
+        route1 = orchestrator.route_after_query_understanding(hybrid_state)
+        self.assertEqual(route1, ["data_query", "document_retrieval"])
+
+        knowledge_state = {"intent": QueryIntent(query="knowledge", intent_type=IntentType.KNOWLEDGE_ONLY, is_supported=True)}
+        route2 = orchestrator.route_after_query_understanding(knowledge_state)
+        self.assertEqual(route2, "document_retrieval")
+
+    def test_26_ollama_embedding_provider_transmits_keep_alive(self):
+        """Verify OllamaEmbeddingProvider attaches keep_alive to the HTTP payload."""
+        provider = OllamaEmbeddingProvider(
+            model="nomic-embed-text",
+            dimension=768,
+            keep_alive="10m",
+        )
+        mock_http_resp = MagicMock()
+        mock_http_resp.getcode.return_value = 200
+        mock_http_resp.read.return_value = json.dumps({"embedding": [0.05] * 768}).encode("utf-8")
+        mock_http_resp.__enter__.return_value = mock_http_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_http_resp) as mock_urlopen:
+            vec = provider.embed_text("ocean salinity measurement")
+            self.assertEqual(len(vec), 768)
+            self.assertEqual(mock_urlopen.call_count, 1)
+            req = mock_urlopen.call_args[0][0]
+            body = json.loads(req.data.decode("utf-8"))
+            self.assertEqual(body.get("keep_alive"), "10m")
+            self.assertEqual(body.get("model"), "nomic-embed-text")
+
+    def test_27_config_embedding_keep_alive_setting(self):
+        """Verify Config default and environment variable override for ollama_embedding_keep_alive."""
+        cfg_default = Config()
+        self.assertEqual(cfg_default.ollama_embedding_keep_alive, "5m")
+
+        with patch.dict(os.environ, {"OLLAMA_EMBEDDING_KEEP_ALIVE": "15m"}):
+            cfg_env = Config()
+            self.assertEqual(cfg_env.ollama_embedding_keep_alive, "15m")
 
 
 if __name__ == "__main__":

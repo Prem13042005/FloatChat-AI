@@ -379,7 +379,7 @@
   }
 }
 
-@media (max-width: 700px) {
+@media (max-width: 768px) {
   .fc-navbar-inner {
     position: relative;
     flex-wrap: wrap;

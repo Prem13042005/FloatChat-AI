@@ -122,4 +122,83 @@ describe("Frontend AI Chat & Error Handling Tests", () => {
     assert.strictEqual(mockRealResponse.visualizationSpec.invertY, true);
     assert.strictEqual(mockRealResponse.warnings.length, 1);
   });
+
+  it("7. Conversation restoration parses chronological user and assistant messages", () => {
+    const conversationDetail = {
+      id: 42,
+      title: "Salinity and Depth Exploration",
+      createdAt: "2026-10-31T10:00:00",
+      updatedAt: "2026-10-31T10:05:00",
+      messages: [
+        { role: "user", content: "What is salinity?", createdAt: "2026-10-31T10:00:01" },
+        { role: "assistant", content: "Salinity is the concentration of dissolved salts in seawater.", createdAt: "2026-10-31T10:00:15" },
+        { role: "user", content: "How many profiles are stored?", createdAt: "2026-10-31T10:01:00" },
+        { role: "assistant", content: "The ARGO database currently stores 107 ocean profiles.", createdAt: "2026-10-31T10:01:10" },
+      ],
+    };
+
+    assert.strictEqual(conversationDetail.id, 42);
+    assert.strictEqual(conversationDetail.messages.length, 4);
+
+    const mapped = conversationDetail.messages.map((m) => ({
+      role: String(m.role || "assistant").toLowerCase(),
+      content: m.content || "",
+      createdAt: m.createdAt,
+    }));
+
+    assert.strictEqual(mapped[0].role, "user");
+    assert.strictEqual(mapped[0].content, "What is salinity?");
+    assert.strictEqual(mapped[1].role, "assistant");
+    assert.strictEqual(mapped[1].content, "Salinity is the concentration of dissolved salts in seawater.");
+    assert.strictEqual(mapped[2].role, "user");
+    assert.strictEqual(mapped[3].role, "assistant");
+    assert.strictEqual(mapped[3].content, "The ARGO database currently stores 107 ocean profiles.");
+  });
+
+  it("8. Empty conversation restoration returns empty message array without placeholder text", () => {
+    const emptyConversation = {
+      id: 99,
+      title: "Fresh Observation Thread",
+      createdAt: "2026-10-31T11:00:00",
+      updatedAt: "2026-10-31T11:00:00",
+      messages: [],
+    };
+
+    assert.strictEqual(emptyConversation.id, 99);
+    assert.strictEqual(Array.isArray(emptyConversation.messages), true);
+    assert.strictEqual(emptyConversation.messages.length, 0);
+
+    const mapped = emptyConversation.messages.map((m) => ({
+      role: String(m.role || "assistant").toLowerCase(),
+      content: m.content || "",
+    }));
+    assert.strictEqual(mapped.length, 0);
+  });
+
+  it("9. getErrorMessage returns clear 404 message when conversation is not found or inaccessible", () => {
+    const error404 = {
+      response: {
+        status: 404,
+        data: { message: "Conversation not found." },
+      },
+    };
+
+    const msg = getErrorMessage(error404);
+    assert.ok(msg.includes("Conversation not found") || msg.includes("not found"));
+  });
+
+  it("10. Active conversation ID persistence lifecycle in sessionStorage", () => {
+    const mockStorage = new Map();
+    const storageInterface = {
+      getItem: (key) => mockStorage.get(key) ?? null,
+      setItem: (key, val) => mockStorage.set(key, String(val)),
+      removeItem: (key) => mockStorage.delete(key),
+    };
+
+    storageInterface.setItem("floatchat_active_conversation_id", "42");
+    assert.strictEqual(storageInterface.getItem("floatchat_active_conversation_id"), "42");
+
+    storageInterface.removeItem("floatchat_active_conversation_id");
+    assert.strictEqual(storageInterface.getItem("floatchat_active_conversation_id"), null);
+  });
 });

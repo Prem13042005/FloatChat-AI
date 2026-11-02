@@ -30,6 +30,7 @@ from src.agents.data_query import (
     UnsupportedIntentError,
 )
 from src.agents.data_query.prompts import (
+    DATA_QUERY_SYSTEM_PROMPT,
     build_data_query_prompt,
     build_sql_retry_prompt,
 )
@@ -554,6 +555,448 @@ class TestDataQueryAgent(unittest.TestCase):
         retry_prompt = build_sql_retry_prompt(intent, "SELECT wmo_id FROM argo_floats", ["Unauthorized column 'wmo_id'"])
         self.assertIn("Unauthorized column 'wmo_id'", retry_prompt)
         self.assertIn("SELECT wmo_id FROM argo_floats", retry_prompt)
+
+    def test_14_deterministic_fast_path_for_float_count(self):
+        """Verify that unambiguous float count queries bypass LLM generation and pass AST validation."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.AGGREGATION,
+            aggregation_operation=AggregationOp.COUNT,
+            target_entity="floats",
+        )
+        result: DataQueryResult = self.agent.generate_sql(intent, query="How many floats are in the database?")
+        self.assertEqual(result.status, DataQueryStatus.SUCCESS)
+        self.assertIn("argo_floats", result.sql)
+        self.assertIn("COUNT(*)", result.sql)
+        self.mock_provider.generate_structured.assert_not_called()
+
+    def test_15_deterministic_fast_path_for_profile_count(self):
+        """Verify that unambiguous profile count queries target argo_profiles and bypass LLM."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.AGGREGATION,
+            aggregation_operation=AggregationOp.COUNT,
+            target_entity="profiles",
+        )
+        result: DataQueryResult = self.agent.generate_sql(intent, query="How many total profiles are in the database?")
+        self.assertEqual(result.status, DataQueryStatus.SUCCESS)
+        self.assertIn("argo_profiles", result.sql)
+        self.assertIn("total_profiles", result.sql)
+        self.mock_provider.generate_structured.assert_not_called()
+
+    def test_16_deterministic_fast_path_for_measurement_count(self):
+        """Verify that unambiguous measurement count queries target argo_measurements and bypass LLM."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.AGGREGATION,
+            aggregation_operation=AggregationOp.COUNT,
+            target_entity="measurements",
+        )
+        result: DataQueryResult = self.agent.generate_sql(intent, query="How many measurements are in the database?")
+        self.assertEqual(result.status, DataQueryStatus.SUCCESS)
+        self.assertIn("argo_measurements", result.sql)
+        self.assertIn("total_measurements", result.sql)
+        self.mock_provider.generate_structured.assert_not_called()
+
+    def test_17_filtered_count_does_not_use_fast_path(self):
+        """Verify that filtered count queries do NOT use the unfiltered fast path."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.AGGREGATION,
+            aggregation_operation=AggregationOp.COUNT,
+            target_entity="profiles",
+            spatial_bounds=SpatialBounds(latitude_min=10.0, latitude_max=20.0),
+        )
+        self.mock_provider.generate_structured.return_value = SQLCandidate(
+            sql="SELECT COUNT(*) AS profile_count FROM argo_profiles WHERE latitude >= 10.0 AND latitude <= 20.0;",
+            explanation="Filtered count of profiles in northern latitudes."
+        )
+        result: DataQueryResult = self.agent.generate_sql(intent, query="How many profiles between latitude 10 and 20?")
+        self.assertEqual(result.status, DataQueryStatus.SUCCESS)
+        self.mock_provider.generate_structured.assert_called_once()
+        self.assertIn("latitude", result.sql)
+
+    def test_18_observation_level_query_prompt_instructions(self):
+        """Verify prompt guidance instructs observation rows when aggregation is null."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.FILTERING,
+            physical_variables=[PhysicalVariable.TEMP, PhysicalVariable.PSAL],
+            wmo_ids=["1902671"],
+            aggregation_operation=None,
+        )
+        prompt = build_data_query_prompt(intent)
+        self.assertIn("Observational queries", prompt)
+        self.assertIn("pressure_dbar", prompt)
+        self.assertIn("temperature_c", prompt)
+        self.assertIn("salinity_psu", prompt)
+        self.assertIn("Do NOT use AVG()", prompt)
+
+    def test_19_explicit_statistical_query_prompt_instructions(self):
+        """Verify prompt guidance instructs aggregate functions when aggregation operation is set."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.AGGREGATION,
+            physical_variables=[PhysicalVariable.TEMP],
+            aggregation_operation=AggregationOp.AVERAGE,
+        )
+        prompt = build_data_query_prompt(intent)
+        self.assertIn("Statistical queries", prompt)
+        self.assertIn("GROUP BY", prompt)
+
+    # ===================================================================
+    # 14. Stage 8B Phase 3: Statistical, Temporal, Comparison & Few-Shot Regression Tests
+    # ===================================================================
+
+    def test_20_system_prompt_contains_statistical_guidance(self):
+        """Verify system prompt contains complete statistical functions guidance."""
+        self.assertIn("STDDEV", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("STDDEV_SAMP", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("STDDEV_POP", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("VARIANCE", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("VAR_SAMP", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("VAR_POP", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("PERCENTILE_CONT", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("WITHIN GROUP", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("PostgreSQL does NOT support `MEDIAN()`", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("IS NOT NULL", DATA_QUERY_SYSTEM_PROMPT)
+
+    def test_21_system_prompt_forbids_window_functions(self):
+        """Verify system prompt explicitly forbids window functions and OVER clauses."""
+        self.assertIn("NEVER use window functions or `OVER (...)`", DATA_QUERY_SYSTEM_PROMPT)
+
+    def test_22_system_prompt_temporal_extract_guidance(self):
+        """Verify system prompt instructs EXTRACT and forbids DATE_TRUNC, TO_CHAR, and unapproved aliases."""
+        self.assertIn("EXTRACT(month FROM p.profile_time)", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("Do NOT use `DATE_TRUNC` or `TO_CHAR`", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("NEVER reference unapproved SELECT aliases in `ORDER BY`", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("ORDER BY 1 ASC", DATA_QUERY_SYSTEM_PROMPT)
+
+    def test_23_system_prompt_multi_float_comparison_guidance(self):
+        """Verify system prompt instructs IN clause and grouping for comparisons."""
+        self.assertIn("p.platform_number IN ('id1', 'id2', ...)", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("Group by `p.platform_number`", DATA_QUERY_SYSTEM_PROMPT)
+        self.assertIn("ORDER BY p.platform_number, p.profile_time DESC, m.pressure_dbar ASC", DATA_QUERY_SYSTEM_PROMPT)
+
+    def test_24_build_prompt_statistical_intent_reminder(self):
+        """Verify build_data_query_prompt adds statistical reminder for STATISTICS category."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.STATISTICS,
+            physical_variables=[PhysicalVariable.TEMP],
+        )
+        prompt = build_data_query_prompt(intent)
+        self.assertIn("Statistical analysis:", prompt)
+        self.assertIn("PERCENTILE_CONT(0.5) WITHIN GROUP", prompt)
+        self.assertIn("NEVER use MEDIAN()", prompt)
+
+    def test_25_build_prompt_comparison_intent_reminder(self):
+        """Verify build_data_query_prompt adds comparison reminder when is_comparison is True."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.COMPARISON,
+            physical_variables=[PhysicalVariable.TEMP],
+            wmo_ids=["1902671", "1902672"],
+            comparison_target=ComparisonTarget(
+                is_comparison=True,
+                comparison_targets=["1902671", "1902672"],
+            ),
+        )
+        prompt = build_data_query_prompt(intent)
+        self.assertIn("Comparison query:", prompt)
+        self.assertIn("p.platform_number IN (...)", prompt)
+        self.assertIn("group by `p.platform_number`", prompt)
+
+    def test_26_build_prompt_temporal_intent_reminder(self):
+        """Verify build_data_query_prompt adds temporal reminder when temporal_range is set."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.TEMPORAL,
+            physical_variables=[PhysicalVariable.TEMP],
+            temporal_range=TemporalRange(start_date="2024-01-01", end_date="2024-12-31"),
+        )
+        prompt = build_data_query_prompt(intent)
+        self.assertIn("Temporal query:", prompt)
+        self.assertIn("EXTRACT(month FROM p.profile_time)", prompt)
+        self.assertIn("Do NOT use DATE_TRUNC", prompt)
+
+    def test_27_build_prompt_spatial_intent_reminder(self):
+        """Verify build_data_query_prompt adds spatial reminder when spatial_bounds are set."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.FILTERING,
+            physical_variables=[PhysicalVariable.TEMP],
+            spatial_bounds=SpatialBounds(latitude_min=18.0, latitude_max=24.0, longitude_min=58.0, longitude_max=74.0),
+        )
+        prompt = build_data_query_prompt(intent)
+        self.assertIn("Spatial query:", prompt)
+        self.assertIn("latitude BETWEEN", prompt)
+        self.assertIn("Never invent coordinates", prompt)
+
+    def test_28_representative_combined_statistics_sql_passes_validator(self):
+        """Verify representative combined statistics candidate SQL passes AST validation."""
+        sql = (
+            "SELECT AVG(m.temperature_c) AS avg_temperature_c, "
+            "STDDEV_SAMP(m.temperature_c) AS std_temperature_c, "
+            "MIN(m.temperature_c) AS min_temperature_c, "
+            "MAX(m.temperature_c) AS max_temperature_c, "
+            "COUNT(*) AS observation_count "
+            "FROM argo_profiles p "
+            "JOIN argo_measurements m ON p.profile_id = m.profile_id "
+            "WHERE p.latitude BETWEEN 18.0 AND 24.0 "
+            "AND p.longitude BETWEEN 58.0 AND 74.0 "
+            "AND m.temperature_c IS NOT NULL;"
+        )
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid, f"Validation failed with errors: {res.errors}")
+
+    def test_29_representative_median_percentile_cont_sql_passes_validator(self):
+        """Verify representative median PERCENTILE_CONT candidate SQL passes AST validation."""
+        sql = (
+            "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY m.temperature_c) AS median_temperature_c, "
+            "COUNT(*) AS observation_count "
+            "FROM argo_profiles p "
+            "JOIN argo_measurements m ON p.profile_id = m.profile_id "
+            "WHERE p.platform_number = '2901550' "
+            "AND m.temperature_c IS NOT NULL;"
+        )
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid, f"Validation failed with errors: {res.errors}")
+
+    def test_30_representative_sample_variance_sql_passes_validator(self):
+        """Verify representative sample variance candidate SQL passes AST validation."""
+        sql = (
+            "SELECT VAR_SAMP(m.salinity_psu) AS var_salinity_psu, "
+            "AVG(m.salinity_psu) AS avg_salinity_psu, "
+            "COUNT(*) AS observation_count "
+            "FROM argo_profiles p "
+            "JOIN argo_measurements m ON p.profile_id = m.profile_id "
+            "WHERE m.pressure_dbar <= 200.0 "
+            "AND m.salinity_psu IS NOT NULL;"
+        )
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid, f"Validation failed with errors: {res.errors}")
+
+    def test_31_representative_monthly_extract_sql_passes_validator(self):
+        """Verify representative monthly grouping candidate SQL using EXTRACT passes AST validation."""
+        sql = (
+            "SELECT EXTRACT(month FROM p.profile_time) AS month_number, "
+            "AVG(m.temperature_c) AS avg_temperature_c, "
+            "COUNT(*) AS observation_count "
+            "FROM argo_profiles p "
+            "JOIN argo_measurements m ON p.profile_id = m.profile_id "
+            "WHERE p.profile_time >= '2024-01-01' "
+            "AND p.profile_time < '2025-01-01' "
+            "AND m.temperature_c IS NOT NULL "
+            "GROUP BY EXTRACT(month FROM p.profile_time) "
+            "ORDER BY 1 ASC "
+            "LIMIT 100;"
+        )
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid, f"Validation failed with errors: {res.errors}")
+
+    def test_32_representative_multi_float_statistical_comparison_passes_validator(self):
+        """Verify representative multi-float statistical comparison candidate SQL passes AST validation."""
+        sql = (
+            "SELECT p.platform_number, "
+            "AVG(m.temperature_c) AS avg_temperature_c, "
+            "MIN(m.temperature_c) AS min_temperature_c, "
+            "MAX(m.temperature_c) AS max_temperature_c, "
+            "COUNT(*) AS observation_count "
+            "FROM argo_profiles p "
+            "JOIN argo_measurements m ON p.profile_id = m.profile_id "
+            "WHERE p.platform_number IN ('1902671', '1902672') "
+            "AND m.temperature_c IS NOT NULL "
+            "GROUP BY p.platform_number "
+            "LIMIT 100;"
+        )
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid, f"Validation failed with errors: {res.errors}")
+
+    def test_33_representative_multi_float_observational_comparison_passes_validator(self):
+        """Verify representative multi-float observational comparison candidate SQL passes AST validation."""
+        sql = (
+            "SELECT p.platform_number, p.profile_time, p.latitude, p.longitude, "
+            "m.pressure_dbar, m.temperature_c, m.salinity_psu "
+            "FROM argo_profiles p "
+            "JOIN argo_measurements m ON p.profile_id = m.profile_id "
+            "WHERE p.platform_number IN ('1902671', '1902672') "
+            "ORDER BY p.platform_number, p.profile_time DESC, m.pressure_dbar ASC "
+            "LIMIT 500;"
+        )
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid, f"Validation failed with errors: {res.errors}")
+
+    def test_34_representative_regional_filtering_sql_passes_validator(self):
+        """Verify representative regional filtering candidate SQL passes AST validation."""
+        sql = (
+            "SELECT p.platform_number, p.profile_time, p.latitude, p.longitude, "
+            "m.pressure_dbar, m.temperature_c, m.salinity_psu "
+            "FROM argo_profiles p "
+            "JOIN argo_measurements m ON p.profile_id = m.profile_id "
+            "WHERE p.latitude BETWEEN 18.0 AND 24.0 "
+            "AND p.longitude BETWEEN 58.0 AND 74.0 "
+            "ORDER BY p.profile_time DESC, m.pressure_dbar ASC "
+            "LIMIT 500;"
+        )
+        res = self.validator.validate(sql)
+        self.assertTrue(res.valid, f"Validation failed with errors: {res.errors}")
+
+    def test_35_end_to_end_generate_sql_statistical_intent(self):
+        """Verify DataQueryAgent end-to-end generate_sql succeeds for statistical intent."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.STATISTICS,
+            physical_variables=[PhysicalVariable.TEMP],
+            spatial_bounds=SpatialBounds(latitude_min=18.0, latitude_max=24.0, longitude_min=58.0, longitude_max=74.0),
+        )
+        candidate = SQLCandidate(
+            sql=(
+                "SELECT AVG(m.temperature_c) AS avg_temperature_c, "
+                "STDDEV_SAMP(m.temperature_c) AS std_temperature_c "
+                "FROM argo_profiles p "
+                "JOIN argo_measurements m ON p.profile_id = m.profile_id "
+                "WHERE p.latitude BETWEEN 18.0 AND 24.0 AND p.longitude BETWEEN 58.0 AND 74.0 "
+                "AND m.temperature_c IS NOT NULL LIMIT 100;"
+            ),
+            explanation="Regional statistical analysis."
+        )
+        self.mock_provider.generate_structured.return_value = candidate
+
+        result = self.agent.generate_sql(intent)
+        self.assertEqual(result.status, DataQueryStatus.SUCCESS)
+        self.assertEqual(result.retry_count, 0)
+        self.assertIn("avg_temperature_c", result.sql)
+        self.assertIn("std_temperature_c", result.sql)
+
+    # ===================================================================
+    # 8. Competition Fix 5: JOIN Reliability & ID Alignment Tests
+    # ===================================================================
+
+    def test_36_missing_measurements_join_automatically_added(self):
+        """Verify candidate SQL lacking argo_measurements has the required join added when measurement cols present."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.FILTERING,
+            physical_variables=[PhysicalVariable.TEMP, PhysicalVariable.PSAL],
+            wmo_ids=["1902671"],
+        )
+        # LLM returns query omitting argo_measurements join
+        candidate = SQLCandidate(
+            sql=(
+                "SELECT platform_number, profile_time, latitude, longitude, pressure_dbar, temperature_c, salinity_psu "
+                "FROM argo_profiles "
+                "WHERE platform_number = '1902671' "
+                "ORDER BY profile_time DESC, pressure_dbar ASC LIMIT 500"
+            ),
+            explanation="Unjoined profile observations."
+        )
+        self.mock_provider.generate_structured.return_value = candidate
+
+        result = self.agent.generate_sql(intent)
+        self.assertEqual(result.status, DataQueryStatus.SUCCESS)
+        self.assertIn("JOIN argo_measurements", result.sql)
+        self.assertIn("argo_profiles.profile_id = m.profile_id", result.sql)
+
+    def test_37_metadata_only_query_preserves_single_table_without_join(self):
+        """Verify metadata-only queries do not have an unnecessary argo_measurements join added."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.FILTERING,
+            physical_variables=[],
+            wmo_ids=["1902671"],
+        )
+        candidate = SQLCandidate(
+            sql=(
+                "SELECT platform_number, profile_time, latitude, longitude "
+                "FROM argo_profiles "
+                "WHERE platform_number = '1902671' LIMIT 100"
+            ),
+            explanation="Metadata profile coordinates."
+        )
+        self.mock_provider.generate_structured.return_value = candidate
+
+        result = self.agent.generate_sql(intent)
+        self.assertEqual(result.status, DataQueryStatus.SUCCESS)
+        self.assertNotIn("argo_measurements", result.sql)
+        self.assertIn("FROM argo_profiles", result.sql)
+
+    def test_38_requested_float_id_preserved_when_llm_leaks_example_ids(self):
+        """Verify candidate SQL with leaked few-shot IDs ('1902671', '1902672') is corrected to requested ID ('2901550')."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.FILTERING,
+            physical_variables=[PhysicalVariable.TEMP],
+            wmo_ids=["2901550"],
+        )
+        # LLM erroneously copies example IDs 1902671 and 1902672 from few-shot prompt
+        candidate = SQLCandidate(
+            sql=(
+                "SELECT p.platform_number, p.profile_time, m.pressure_dbar, m.temperature_c "
+                "FROM argo_profiles p "
+                "JOIN argo_measurements m ON p.profile_id = m.profile_id "
+                "WHERE p.platform_number IN ('1902671', '1902672') "
+                "ORDER BY p.profile_time DESC, m.pressure_dbar ASC LIMIT 100"
+            ),
+            explanation="Float profile."
+        )
+        self.mock_provider.generate_structured.return_value = candidate
+
+        result = self.agent.generate_sql(intent)
+        self.assertEqual(result.status, DataQueryStatus.SUCCESS)
+        self.assertIn("2901550", result.sql)
+        self.assertNotIn("1902671", result.sql)
+        self.assertNotIn("1902672", result.sql)
+
+    def test_39_multiple_float_query_preserves_all_requested_ids(self):
+        """Verify multiple requested float IDs are preserved and replace leaked IDs."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.COMPARISON,
+            physical_variables=[PhysicalVariable.TEMP],
+            wmo_ids=["2901550", "2901551"],
+        )
+        candidate = SQLCandidate(
+            sql=(
+                "SELECT p.platform_number, AVG(m.temperature_c) AS avg_temperature_c "
+                "FROM argo_profiles p "
+                "JOIN argo_measurements m ON p.profile_id = m.profile_id "
+                "WHERE p.platform_number IN ('1902671', '1902672') "
+                "GROUP BY p.platform_number LIMIT 100"
+            ),
+            explanation="Multi-float comparison."
+        )
+        self.mock_provider.generate_structured.return_value = candidate
+
+        result = self.agent.generate_sql(intent)
+        self.assertEqual(result.status, DataQueryStatus.SUCCESS)
+        self.assertIn("2901550", result.sql)
+        self.assertIn("2901551", result.sql)
+        self.assertNotIn("1902671", result.sql)
+
+    def test_40_single_float_does_not_silently_include_second_float(self):
+        """Verify single float query strictly isolates to single requested float."""
+        intent = QueryIntent(
+            intent_type=IntentType.DATA_ONLY,
+            intent_category=IntentCategory.FILTERING,
+            physical_variables=[PhysicalVariable.TEMP],
+            wmo_ids=["2901550"],
+        )
+        candidate = SQLCandidate(
+            sql=(
+                "SELECT p.platform_number, m.temperature_c "
+                "FROM argo_profiles p "
+                "JOIN argo_measurements m ON p.profile_id = m.profile_id "
+                "WHERE p.platform_number = '1902671' LIMIT 50"
+            ),
+            explanation="Single float query."
+        )
+        self.mock_provider.generate_structured.return_value = candidate
+
+        result = self.agent.generate_sql(intent)
+        self.assertEqual(result.status, DataQueryStatus.SUCCESS)
+        self.assertIn("2901550", result.sql)
+        self.assertNotIn("1902671", result.sql)
 
 
 if __name__ == "__main__":

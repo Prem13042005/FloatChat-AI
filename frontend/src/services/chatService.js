@@ -1,15 +1,13 @@
 import {
   sendChatMessage,
   getConversations,
+  getConversation,
   deleteConversation,
 } from "./api";
 
 export {
   sendChatMessage,
   getConversations,
+  getConversation,
   deleteConversation,
 };
-
-export async function getConversation(id) {
-  return { id, messages: [] };
-}

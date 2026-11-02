@@ -22,6 +22,12 @@ class GenerationResult:
     raw_response: Optional[Dict[str, Any]] = None
     model: Optional[str] = None
     finish_reason: Optional[str] = None
+    total_duration_ms: Optional[float] = None
+    load_duration_ms: Optional[float] = None
+    prompt_eval_count: Optional[int] = None
+    prompt_eval_duration_ms: Optional[float] = None
+    eval_count: Optional[int] = None
+    eval_duration_ms: Optional[float] = None
 
 
 class BaseLLMProvider(ABC):

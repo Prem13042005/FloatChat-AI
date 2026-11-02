@@ -1,4 +1,5 @@
 import axios from "axios";
+import { emitAuthEvent, AUTH_EVENTS } from "./authEvents.js";
 
 const api = axios.create({
   baseURL: import.meta?.env?.VITE_API_BASE_URL || "",
@@ -23,19 +24,56 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor: only clear auth on genuine 401 Unauthorized
+// Response interceptor: only clear auth on genuine 401 Unauthorized from protected endpoints
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     const status = error?.response?.status;
-    // Only redirect if authenticated route returned 401 (do not clear for 429, 502, 503, 504)
-    if (status === 401 && !error.config?.url?.includes("/auth/login")) {
-      const token = localStorage.getItem("floatchat_token");
-      if (token) {
+    const url = error?.config?.url || "";
+    const isLoginRequest = url.includes("/auth/login");
+
+    // Only handle genuine 401 Unauthorized from protected endpoints (exclude login failures)
+    if (status === 401 && !isLoginRequest) {
+      let requestAuthHeader = null;
+      if (error?.config?.headers) {
+        if (typeof error.config.headers.get === "function") {
+          requestAuthHeader = error.config.headers.get("Authorization");
+        }
+        if (!requestAuthHeader) {
+          requestAuthHeader =
+            error.config.headers.Authorization ||
+            error.config.headers.authorization;
+        }
+      }
+
+      let requestToken = null;
+      if (typeof requestAuthHeader === "string") {
+        requestToken = requestAuthHeader.replace(/^Bearer\s+/i, "").trim();
+      }
+
+      const currentToken = localStorage.getItem("floatchat_token");
+
+      // If request carried an older token that is no longer the active token,
+      // this 401 is from a stale session and must NOT evict the new session.
+      const isStaleRequest = Boolean(
+        requestToken && currentToken && requestToken !== currentToken
+      );
+
+      if (!isStaleRequest && currentToken) {
         localStorage.removeItem("floatchat_token");
         localStorage.removeItem("floatchat_user");
+        if (typeof sessionStorage !== "undefined") {
+          sessionStorage.removeItem("floatchat_active_conversation_id");
+        }
+
+        emitAuthEvent({
+          type: AUTH_EVENTS.UNAUTHORIZED,
+          status: 401,
+          url,
+        });
       }
     }
+
     return Promise.reject(error);
   }
 );
@@ -145,6 +183,11 @@ export const getConversations = async () => {
   return response.data;
 };
 
+export const getConversation = async (id) => {
+  const response = await api.get(`/api/v1/conversations/${id}`);
+  return response.data;
+};
+
 export const deleteConversation = async (id) => {
   const response = await api.delete(`/api/v1/conversations/${id}`);
   return response.data;
@@ -226,4 +269,3 @@ export const getAdminUsers = async (page = 0, size = 10) => {
 };
 
 export default api;
-

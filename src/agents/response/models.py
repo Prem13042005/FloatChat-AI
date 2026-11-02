@@ -51,6 +51,10 @@ class VisualizationSpec(BaseModel):
         default=None,
         description="Brief caption explaining the scientific significance of the plot."
     )
+    data: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Clean observation records grounded in database results for interactive rendering."
+    )
 
 
 class Citation(BaseModel):
@@ -79,6 +83,10 @@ class DataSummary(BaseModel):
     temporal_coverage: Optional[str] = Field(default=None, description="Temporal span or date range of observations.")
     spatial_coverage: Optional[str] = Field(default=None, description="Geographic bounding summary of observations.")
     highlights: List[str] = Field(default_factory=list, description="Key deterministic statistics (min, max, mean, count).")
+    is_truncated: bool = Field(default=False, description="True if query results were truncated by database limit.")
+    sample_size: Optional[int] = Field(default=None, description="Sample size analyzed when results are truncated.")
+    null_counts: Dict[str, int] = Field(default_factory=dict, description="Counts of missing/null values per measurement column.")
+    depth_strata: Optional[Dict[str, Any]] = Field(default=None, description="Stratified metrics by oceanographic depth layers (epipelagic, mesopelagic, bathypelagic).")
 
 
 class ScientificResponse(BaseModel):

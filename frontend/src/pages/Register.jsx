@@ -38,7 +38,7 @@ export default function Register() {
       });
 
       if (response?.token && response?.user) {
-        navigate("/dashboard/user", { replace: true });
+        navigate("/dashboard", { replace: true });
       } else {
         navigate("/login", {
           replace: true,
