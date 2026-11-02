@@ -1,16 +1,16 @@
 # FloatChat AI 🌊
 ### Agentic Conversational Platform for Oceanographic Data Discovery & Analysis
 
-[![Architecture](https://img.shields.io/badge/Architecture-3--Tier%20Microservices-blue.svg)](#-system-architecture)
-[![Frontend](https://img.shields.io/badge/Frontend-React%2018%20%7C%20Vite-61dafb.svg)](#8-technology-stack)
-[![Backend](https://img.shields.io/badge/Backend-Spring%20Boot%203.3-6db33f.svg)](#8-technology-stack)
-[![AI Engine](https://img.shields.io/badge/AI%20Engine-FastAPI%20%7C%20LangGraph-009688.svg)](#8-technology-stack)
-[![Database](https://img.shields.io/badge/Database-PostgreSQL%2015%20%7C%20PostGIS%20%7C%20pgvector-336791.svg)](#9-database-architecture)
-[![Local LLM](https://img.shields.io/badge/Inference-Ollama%20(qwen2.5%20%7C%20nomic--embed--text)-black.svg)](#8-technology-stack)
+![Architecture](https://img.shields.io/badge/Architecture-3--Tier%20Microservices-blue)
+![Frontend](https://img.shields.io/badge/Frontend-React%2018%20%7C%20Vite%206-61dafb)
+![Backend](https://img.shields.io/badge/Backend-Spring%20Boot%203.3.5%20%7C%20Java%2021-6db33f)
+![AI Engine](https://img.shields.io/badge/AI%20Engine-FastAPI%20%7C%20LangGraph-009688)
+![Database](https://img.shields.io/badge/Database-PostgreSQL%2015%20%7C%20PostGIS%20%7C%20pgvector-336791)
+![Inference](https://img.shields.io/badge/Inference-Ollama%20(Local%20CPU)-black)
 
-FloatChat AI is an enterprise-grade, agentic conversational platform that democratizes access to oceanographic observation data collected by the international **ARGO float program**. By pairing specialized multi-agent LangGraph workflows with deterministic AST-based SQL validation, vector-grounded retrieval-augmented generation (RAG), and interactive multi-modal visualizations, FloatChat enables marine scientists, oceanographers, students, and maritime analysts to explore, analyze, and visualize high-dimensional ocean data using natural language.
+FloatChat AI is an agentic conversational platform that enables researchers, oceanographers, and analysts to explore and analyze oceanographic observation data collected by the international **ARGO float program**. By coordinating multi-agent LangGraph workflows with deterministic Abstract Syntax Tree (AST) SQL validation, vector-grounded retrieval-augmented generation (RAG), and interactive scientific visualizations, FloatChat provides a natural-language interface for querying high-dimensional ocean data.
 
-Instead of writing complex PostGIS spatial SQL or parsing multidimensional netCDF archives manually, users interact conversationally to extract depth profiles, analyze temperature/salinity distributions, investigate spatio-temporal trends, and explore oceanographic literature.
+Users can conversationally inspect vertical temperature and salinity depth profiles, analyze measurement distributions, examine water mass characteristics through temperature-salinity diagrams, review temporal trends, and explore oceanographic literature without manually constructing complex SQL or parsing netCDF files.
 
 ---
 
@@ -18,68 +18,63 @@ Instead of writing complex PostGIS spatial SQL or parsing multidimensional netCD
 
 1. [Project Overview](#1-project-overview)
 2. [Problem Statement](#2-problem-statement)
-3. [Project Objectives](#3-project-objectives)
+3. [Objectives](#3-objectives)
 4. [Key Features](#4-key-features)
 5. [System Architecture](#5-system-architecture)
-6. [Three-Agent LangGraph Architecture](#6-three-agent-langgraph-architecture)
-7. [Agent Workflows: KNOWLEDGE_ONLY, DATA_ONLY, and HYBRID](#7-agent-workflows)
+6. [Three-Agent Architecture](#6-three-agent-architecture)
+7. [Workflow Explanation](#7-workflow-explanation)
 8. [Technology Stack](#8-technology-stack)
 9. [Database Architecture](#9-database-architecture)
-10. [ARGO Dataset Information](#10-argo-dataset-information)
+10. [Dataset Information](#10-dataset-information)
 11. [Repository Structure](#11-repository-structure)
-12. [Prerequisites & Installation](#12-prerequisites--installation)
+12. [Prerequisites and Installation](#12-prerequisites-and-installation)
 13. [Environment Configuration](#13-environment-configuration)
-14. [Docker Database Startup](#14-docker-database-startup)
-15. [Python AI Service Startup](#15-python-ai-service-startup)
-16. [Java Spring Boot Backend Startup](#16-java-spring-boot-backend-startup)
-17. [React / Vite Frontend Startup](#17-react--vite-frontend-startup)
-18. [API Endpoints](#18-api-endpoints)
-19. [Example Queries for Demonstration](#19-example-queries-for-demonstration)
-20. [Testing Instructions](#20-testing-instructions)
-21. [Known Limitations](#21-known-limitations)
-22. [Future Scope](#22-future-scope)
-23. [Team & Acknowledgements](#23-team--acknowledgements)
+14. [Running the Application](#14-running-the-application)
+15. [API Endpoints](#15-api-endpoints)
+16. [Example Demonstration Queries](#16-example-demonstration-queries)
+17. [Testing](#17-testing)
+18. [Known Limitations](#18-known-limitations)
+19. [Future Scope](#19-future-scope)
+20. [Team and Acknowledgements](#20-team-and-acknowledgements)
 
 ---
 
 ## 1. Project Overview
 
-FloatChat AI bridges the gap between massive, heterogeneous oceanographic datasets and domain practitioners. Built on a resilient three-tier microservice architecture (React 18 + Vite frontend, Spring Boot 3 enterprise application backend, and FastAPI + LangGraph AI engine), the system translates conversational questions into deterministic, schema-safe PostGIS queries, executes semantic vector searches over peer-reviewed oceanographic documentation, and renders reactive scientific charts (vertical depth profiles, T-S scatter plots, histograms, and temporal trends).
+FloatChat AI bridges the gap between complex oceanographic datasets and domain practitioners. Built on a three-tier microservice architecture—a React 18 single-page application, a Spring Boot 3.3 application backend, and a FastAPI AI engine coordinated by LangGraph—the platform translates natural language inquiries into schema-validated PostGIS queries, retrieves relevant domain literature using `pgvector`, and produces structured scientific responses with dynamic chart specifications.
 
 ---
 
 ## 2. Problem Statement
 
-ARGO floats drift across the world's oceans, descending to depths of 2,000 meters and ascending to transmit profile measurements of temperature, salinity, and pressure via satellite. While this global observation network produces indispensable climate and marine data:
+ARGO profiling floats collect essential physical oceanography data across the global ocean, descending to depths of 2,000 meters and recording vertical profiles of pressure, temperature, and salinity:
 
-- **Complex Data Formats:** Data is traditionally archived in multi-dimensional netCDF files or complex normalized relational schemas with spatial geometries (`Point`, `Polygon`), requiring specialized programming skills in Python (`xarray`, `netCDF4`) or advanced SQL (`ST_DWithin`, `ST_MakePoint`).
-- **Domain Silos:** Querying observational records requires simultaneously consulting domain literature (e.g., understanding mixed-layer dynamics, haloclines, thermoclines, and water mass characteristics) alongside raw numbers.
-- **Query Vulnerability & Hallucination:** Naive LLM-to-SQL solutions generate hallucinated schema references, cross-product table joins, or SQL injection vectors, and frequently generate incorrect statistical aggregations.
-- **Visualization Rigidity:** Standard chat interfaces output flat markdown tables rather than scientific charts configured for oceanographic conventions (e.g., inverting vertical pressure axes so surface waters appear at the top).
-
-FloatChat AI resolves these challenges through verified agentic workflows, deterministic AST query refinement, strict database access controls, and dynamic visualization synthesis.
+- **Complex Schema & Formats:** Data is traditionally archived in multi-dimensional netCDF files or normalized relational tables with spatial geometries, requiring specialized data tools or advanced SQL for spatial filtering (`ST_DWithin`, `ST_MakePoint`).
+- **Domain Context Requirement:** Interpreting observational measurements often requires cross-referencing domain literature (e.g., mixed-layer depth, thermocline gradients, water mass definitions) alongside numerical records.
+- **SQL Reliability & Safety Risks:** Direct LLM-to-SQL generation can hallucinate schema elements, create inefficient cartesian joins, or produce non-executable queries without strict validation gates.
+- **Visual Presentation Needs:** Numerical tables alone do not convey oceanographic patterns as effectively as domain-specific charts (such as vertical profiles with inverted depth axes).
 
 ---
 
-## 3. Project Objectives
+## 3. Objectives
 
-- **Natural Language Discovery:** Enable researchers to query Indian Ocean ARGO float observations and ocean physics conversationally without prior SQL or netCDF knowledge.
-- **Deterministic SQL Generation & Security:** Guarantee 100% read-only SQL execution via AST parsing (`sqlglot`), schema whitelisting, automatic join injection, hard statement timeouts, and a dedicated unprivileged database user (`floatchat_ai_user`).
-- **Grounded Scientific Reasoning:** Combine observational data with vector-embedded literature chunks (`pgvector` + `nomic-embed-text`) to eliminate LLM hallucinations.
-- **Dynamic Oceanographic Visualizations:** Automatically infer and render appropriate chart specifications (vertical profiles, temperature/salinity distributions, T-S diagrams, time series) with oceanographic axis conventions.
-- **Enterprise Resiliency:** Provide JWT authentication, conversation history persistence, role-based dashboards, request rate limiting, and cooperative cancellation tokens to terminate orphaned background inferences cleanly.
+- **Natural Language Discovery:** Enable users to query Indian Ocean ARGO float observations and ocean physics using conversational natural language.
+- **Deterministic SQL Safety:** Validate generated SQL through AST parsing (`sqlglot`), schema/table/column whitelisting, automatic join injection, hard statement timeouts, and a dedicated unprivileged database role (`floatchat_ai_user`).
+- **Evidence-Grounded Explanations:** Pair numerical database observations with semantic vector retrieval over oceanographic literature (`pgvector` with `nomic-embed-text`) to ground scientific explanations.
+- **Dynamic Oceanographic Visualizations:** Automatically select and configure appropriate chart types (vertical profiles, histograms, scatter plots, time series) following physical oceanography conventions.
+- **Resilient Multi-Tier Coordination:** Provide JWT-based user authentication, role management (`USER`, `ADMIN`, `SUPER_ADMIN`), conversation persistence, in-memory rate limiting, and cooperative cancellation tokens to halt orphaned background workflows cleanly.
 
 ---
 
 ## 4. Key Features
 
-- **Agentic Multi-Model Orchestration:** Three specialized LangGraph agents coordinate natural language understanding, database querying, and scientific synthesis.
-- **Deterministic SQL Validator & Auto-Joiner:** Validates generated SQL syntax against an abstract syntax tree, enforces `SELECT`-only permissions, whitelists tables/columns, automatically joins `argo_measurements` with `argo_profiles` when measurement columns are queried, and injects safe limits.
-- **Vector-Grounded Oceanographic RAG:** Cosine similarity vector search over curated oceanographic documentation indexed in PostgreSQL via `pgvector` HNSW indexes.
-- **Dynamic Visualization Engine:** Intelligently matches query intent and data shapes to generate vertical depth profiles, histograms, scatter plots, and time-series charts.
-- **Cooperative Cancellation Tokens:** Thread-safe tokens allow HTTP client timeouts or disconnections to cancel long-running Ollama inference workflows immediately, freeing CPU concurrency slots.
-- **Enterprise Spring Boot Tier:** Robust token-based authentication, user role hierarchy (Admin, Scientist, Analyst), conversation session management, in-memory rate limiting, and persistent query auditing.
-- **Responsive React 18 UI:** Clean marine-themed UI featuring interactive Chart.js visualizations, chat history sidebar, scientific citations drawer, and real-time system health metrics.
+- **Three Specialized LangGraph Agents:** Coordinated query understanding, SQL data querying, and scientific response synthesis.
+- **Deterministic AST SQL Validator:** Parses candidate queries with `sqlglot`, restricts operations to `SELECT`, whitelists tables and columns, injects safe row limits (default 500, max 1000), and auto-joins `argo_measurements` and `argo_profiles` on `profile_id`.
+- **Vector-Grounded Oceanographic RAG:** Cosine similarity vector search over curated oceanographic documentation stored in `argo_doc_embeddings`.
+- **Dynamic Visualizations:** Generates specifications rendered in Recharts and Leaflet for vertical depth profiles (inverted pressure axis), parameter distribution histograms, T-S scatter diagrams, time-series lines, and geographic maps.
+- **Cooperative Cancellation:** Employs thread-safe `CancellationToken` checkpoints between LangGraph nodes to prevent unnecessary processing after HTTP client timeouts or disconnections.
+- **Enterprise Application Backend:** Spring Boot 3.3 provides token authentication, conversation session tracking, and rate limiting.
+- **Responsive React 18 UI:** Clean marine-themed web application with interactive chart rendering, conversation history restoration, and citation drawers.
 
 ---
 
@@ -91,190 +86,200 @@ flowchart TD
         UI["React 18 + Vite SPA<br/>(Port 5173)"]
     end
 
-    subgraph Backend_Tier ["Application Backend Tier (Spring Boot 3.3)"]
+    subgraph Backend_Tier ["Application Backend Tier (Spring Boot 3.3.5)"]
         GW["REST API Gateway & Security<br/>(Port 8080)"]
-        AUTH["JWT Auth & Rate Limiting"]
-        PERSIST["Conversation & History Service"]
-        AI_CLI["AI Service HTTP Client<br/>(with Timeout & Error Handling)"]
+        AUTH["JWT Authentication & Rate Limiting"]
+        PERSIST["Conversation Persistence Service"]
+        AI_CLIENT["AI Service Client"]
     end
 
     subgraph AI_Tier ["AI Engine Tier (FastAPI + LangGraph)"]
         API["FastAPI AI Service<br/>(Port 8000)"]
-        ORCH["LangGraph Orchestrator<br/>(CancellationToken Support)"]
-        Q_AGENT["1. Query Understanding Agent<br/>(Intent, Gazetteer & Routing)"]
-        D_AGENT["2. Data Query Agent<br/>(Schema-Aware SQL Generation)"]
-        R_AGENT["3. Scientific Response Agent<br/>(Synthesis & Visualization Spec)"]
-        VAL["Deterministic SQL AST Validator<br/>(sqlglot Whitelisting & Auto-Join)"]
+        ORCH["LangGraph Orchestrator<br/>(CancellationToken Checkpoints)"]
+        Q_AGENT["1. Query Understanding Agent"]
+        D_AGENT["2. Data Query Agent"]
+        VAL["Deterministic SQL AST Validator<br/>(sqlglot Whitelist & Auto-Join)"]
+        R_AGENT["3. Scientific Response Agent"]
     end
 
     subgraph Inference_Tier ["Local Inference (Ollama)"]
-        LLM["qwen2.5:1.5b-instruct<br/>(Local CPU Inference)"]
+        LLM["qwen2.5:1.5b-instruct<br/>(Local Generation)"]
         EMBED["nomic-embed-text<br/>(768-dim Embeddings)"]
     end
 
     subgraph Data_Tier ["Data Tier (PostgreSQL 15 + PostGIS + pgvector)"]
-        APP_DB[("Application DB<br/>users, query_history, roles")]
-        ARGO_DB[("ARGO Relational DB<br/>floats, profiles, measurements")]
-        VEC_DB[("Vector Store (pgvector)<br/>argo_knowledge_chunks")]
+        APP_DB[("Application Store<br/>users, query_history, conversations")]
+        ARGO_DB[("Relational ARGO Store<br/>argo_floats, argo_profiles, argo_measurements")]
+        VEC_STORE[("Vector Store<br/>argo_doc_embeddings")]
     end
 
     UI <-->|HTTP / JSON / JWT| GW
     GW --> AUTH
     GW --> PERSIST
     PERSIST <--> APP_DB
-    GW --> AI_CLI
-    AI_CLI <-->|HTTP POST /api/v1/chat| API
+    GW --> AI_CLIENT
+    AI_CLIENT <-->|HTTP POST /api/v1/chat| API
 
     API --> ORCH
     ORCH --> Q_AGENT
     Q_AGENT <--> LLM
-    Q_AGENT -->|DATA_ONLY / HYBRID| D_AGENT
-    Q_AGENT -->|KNOWLEDGE_ONLY / HYBRID| VEC_DB
+    Q_AGENT -->|DATA_ONLY| D_AGENT
+    Q_AGENT -->|KNOWLEDGE_ONLY| VEC_STORE
+    Q_AGENT -->|HYBRID (Parallel Fan-out)| D_AGENT
+    Q_AGENT -->|HYBRID (Parallel Fan-out)| VEC_STORE
 
     D_AGENT <--> LLM
     D_AGENT --> VAL
     VAL -->|Read-Only SQL (floatchat_ai_user)| ARGO_DB
 
     D_AGENT --> R_AGENT
-    VEC_DB --> R_AGENT
+    VEC_STORE --> R_AGENT
     R_AGENT <--> LLM
     R_AGENT --> API
 ```
 
 ---
 
-## 6. Three-Agent LangGraph Architecture
+## 6. Three-Agent Architecture
 
-FloatChat AI strictly coordinates **three specialized agents** within a LangGraph state graph:
+FloatChat AI organizes reasoning into **three specialized agents** within a compiled LangGraph state graph:
 
 ```
-[User Question]
-       │
-       ▼
+[User Query]
+      │
+      ▼
 ┌─────────────────────────────────┐
 │ 1. QueryUnderstandingAgent      │ ── Extracts temporal, spatial, float IDs & parameters
-└─────────────────────────────────┘ ── Resolves geographic names via Indian Ocean Gazetteer
-       │                            ── Determines workflow: KNOWLEDGE_ONLY | DATA_ONLY | HYBRID
-       ├───────────────────────────────┬───────────────────────────────┐
-       │ (DATA_ONLY)                   │ (HYBRID - Parallel)           │ (KNOWLEDGE_ONLY)
-       ▼                               ▼                               │
-┌──────────────────────────────┐ ┌──────────────────────────────┐      │
-│ 2. DataQueryAgent            │ │ 2. DataQueryAgent            │      │
-│  - SQL generation (few-shot) │ │  + Vector RAG Retrieval      │      │
-│  - AST validation (sqlglot)  │ └──────────────────────────────┘      │
-│  - Auto-join & Read-only DB  │               │                       │
-└──────────────────────────────┘               │                       │
-       │                                       │                       │
-       └───────────────────────────────┬───────┴───────────────────────┘
-                                       │
-                                       ▼
-┌───────────────────────────────────────────────────────────────────────┐
-│ 3. ScientificResponseAgent                                            │
-│  - Synthesizes tabular observation data and/or vector context chunks  │
-│  - Computes deterministic statistics (sample size, averages, ranges)  │
-│  - Emits structured citations & oceanographic visualization spec      │
-└───────────────────────────────────────────────────────────────────────┘
-                                       │
-                                       ▼
-                      [Structured Response JSON]
+└─────────────────────────────────┘ ── Resolves region names via Indian Ocean Gazetteer
+      │                            ── Determines workflow: KNOWLEDGE_ONLY | DATA_ONLY | HYBRID
+      ├───────────────────────────────┬───────────────────────────────┐
+      │ (DATA_ONLY)                   │ (HYBRID - Parallel Fan-out)   │ (KNOWLEDGE_ONLY)
+      ▼                               ▼                               │
+┌──────────────────────────────┐ ┌──────────────────────────────┐     │
+│ 2. DataQueryAgent            │ │ 2. DataQueryAgent            │     │
+│  - Few-shot SQL generation   │ │  + Vector RAG Retrieval      │     │
+│  - AST validation (sqlglot)  │ └──────────────┬───────────────┘     │
+│  - Auto-join & Read-only DB  │                ▼                     │
+└──────────────┬───────────────┘       [ join_node barrier ]          │
+               │                                │                     │
+               └────────────────────────────────┼─────────────────────┘
+                                                │
+                                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ 3. ScientificResponseAgent                                          │
+│  - Synthesizes observational rows and/or retrieved vector chunks    │
+│  - Computes deterministic statistics (sample size, means, ranges)   │
+│  - Emits literature citations and visualization specifications      │
+└─────────────────────────────────────────────────────────────────────┘
+                                                │
+                                                ▼
+                                    [Structured Response JSON]
 ```
 
 ### 1. `QueryUnderstandingAgent`
-- **Responsibility:** Parses user questions into structured intent parameters.
-- **Gazetteer Matching:** Includes an Indian Ocean Gazetteer mapping natural names (e.g., *"Arabian Sea"*, *"Bay of Bengal"*, *"Equatorial Indian Ocean"*) to exact latitude/longitude bounding boxes.
-- **Output:** Categorizes intent into one of three execution paths (`KNOWLEDGE_ONLY`, `DATA_ONLY`, or `HYBRID`), accompanied by target float IDs, ocean parameters, depth levels, and temporal constraints.
+- **Function:** Parses user queries into a structured `QueryIntent` object.
+- **Gazetteer Matching:** Contains an Indian Ocean Gazetteer mapping geographical names (e.g., *"Arabian Sea"*, *"Bay of Bengal"*, *"Equatorial Indian Ocean"*) to latitude/longitude bounding boxes.
+- **Routing:** Classifies queries into `KNOWLEDGE_ONLY`, `DATA_ONLY`, or `HYBRID`, extracting float identifiers, target ocean parameters, pressure ranges, and time windows.
 
 ### 2. `DataQueryAgent`
-- **Responsibility:** Generates and executes schema-accurate SQL against the ARGO relational store.
-- **Deterministic SQL Validator:** Inspects the query AST using `sqlglot`. Prohibits DDL/DML, restricts queries exclusively to `SELECT`, whitelists tables (`argo_floats`, `argo_profiles`, `argo_measurements`), limits output to a safe ceiling (500 rows), and enforces a 5-second statement timeout.
-- **Automated Join Refinement:** When queries select measurement fields (`temperature_c`, `salinity_psu`, `pressure_dbar`) alongside float/profile filters, the agent automatically validates and injects the proper join (`argo_measurements.profile_id = argo_profiles.id`).
+- **Function:** Produces schema-compliant SQL for observational questions.
+- **AST Security Gate:** Uses `sqlglot` to inspect candidate SQL syntax trees before execution.
+- **Whitelist Enforcement:** Restricts queries to `SELECT`, whitelisting tables (`argo_floats`, `argo_profiles`, `argo_measurements`) and their physical columns.
+- **Query Auto-Refinement:** When queries request measurement columns (`temperature_c`, `salinity_psu`, `pressure_dbar`) alongside profile filters, the validator verifies or injects the inner join `argo_measurements.profile_id = argo_profiles.profile_id`.
+- **Execution Limits:** Injects a default limit of 500 rows (capped at 1000) and applies a 5,000 ms statement timeout.
 
 ### 3. `ScientificResponseAgent`
-- **Responsibility:** Translates raw database rows and retrieved literature passages into clear scientific explanations.
-- **Deterministic Aggregations:** Computes sample sizes, mean temperature, mean salinity, and depth ranges directly from the returned result set rather than relying on LLM arithmetic.
-- **Dynamic Visualization Builder:** Analyzes query keywords and column aliases to generate verified Chart.js visualization specifications (e.g., selecting vertical line profiles for depth queries, histograms for distributions, scatter plots for T-S relationships, and line charts for temporal series).
+- **Function:** Translates raw database rows and retrieved literature passages into clear scientific explanations.
+- **Deterministic Statistics:** Computes sample sizes, mean temperature, mean salinity, and pressure depth ranges directly from the returned database records to prevent arithmetic errors.
+- **Dynamic Visualization Specification:** Generates chart specifications matching query intent (vertical inverted line chart for depth profiles, histograms for distributions, scatter plots for parameter relationships, and chronological line charts for temporal series).
 
 ---
 
-## 7. Agent Workflows
+## 7. Workflow Explanation
 
-FloatChat AI supports three execution workflows:
-
-| Workflow | Trigger Condition | Execution Path | Example Query |
+| Workflow | Routing Criteria | Execution Flow | Example Query |
 | :--- | :--- | :--- | :--- |
-| **`KNOWLEDGE_ONLY`** | Conceptual, theoretical, or instrument questions without float/observational filters. | Skips SQL generation. Runs semantic vector retrieval over `argo_knowledge_chunks` and synthesizes an evidence-backed answer with literature citations. | *"What is an ARGO float and how does it measure ocean salinity?"* |
-| **`DATA_ONLY`** | Empirical requests targeting float IDs, geographic regions, depth levels, or time series. | Invokes `DataQueryAgent` -> AST validation -> execution against `floatchat_db` -> generates data summary and visualization specification. | *"Show the vertical temperature profile for float 1902671."* |
-| **`HYBRID`** | Questions combining conceptual ocean physics with specific observational data. | Executes `DataQueryAgent` and vector RAG retrieval concurrently. Merges returned rows and scientific chunks into a unified response with both data visualizations and theoretical context. | *"Explain what the thermocline is and show the temperature profile for float 1902671."* |
+| **`KNOWLEDGE_ONLY`** | Conceptual, physical oceanography, or instrumentation questions without float/observational filters. | Bypasses SQL generation and database execution. Dispatches semantic vector retrieval against `argo_doc_embeddings` and generates an explanation with literature citations. | *"What is an ARGO float and how does it measure ocean salinity?"* |
+| **`DATA_ONLY`** | Empirical questions targeting float numbers, geographic coordinates, depth ranges, or time windows. | Dispatches `DataQueryAgent` -> AST validation -> execution on `floatchat_db` -> generates data summary and chart specification. | *"Show the vertical temperature profile for float 1902671."* |
+| **`HYBRID`** | Questions combining conceptual ocean physics inquiries with specific observational data requests. | Concurrently dispatches `DataQueryAgent` and vector RAG retrieval via LangGraph parallel fan-out. Both branches synchronize at `join_node` before `ScientificResponseAgent` generates a combined response. | *"Explain what the thermocline is and show the temperature profile for float 1902671."* |
 
 ---
 
 ## 8. Technology Stack
 
 ### Frontend Client
-- **Framework:** React 18 (Functional components, Hooks)
-- **Tooling:** Vite 5 (Fast HMR, optimized production bundling)
-- **Data Visualization:** Chart.js 4 & `react-chartjs-2`
-- **Routing & Networking:** React Router DOM 6, Axios (with JWT interceptors)
-- **Testing:** Vitest, `@testing-library/react`, JSDOM
+- **Framework:** React 18 (`^18.3.1`)
+- **Build Tool:** Vite 6 (`^6.0.7`)
+- **Charting Library:** Recharts (`^2.15.0`)
+- **Mapping Library:** Leaflet (`^1.9.4`) and React-Leaflet (`^4.2.1`)
+- **Icons & UI:** Lucide React (`^1.61.0`)
+- **Routing & Networking:** React Router DOM (`^6.28.1`), Axios (`^1.7.9`)
+- **Test Runner:** Node Test Runner (`node --test`)
 
 ### Application Backend Tier
-- **Framework:** Spring Boot 3.3.4 (Java 17+)
-- **Security:** Spring Security 6, JJWT (JSON Web Token authentication)
+- **Framework:** Spring Boot 3.3.5 (Java 21+)
+- **Security:** Spring Security 6, JJWT (`0.12.6`)
 - **Persistence:** Spring Data JPA, Hibernate, PostgreSQL JDBC Driver
-- **Resilience:** In-memory sliding-window rate limiting, configurable AI service read/connect timeouts
-- **Build Tool:** Apache Maven (Wrapper included: `./mvnw`)
+- **Build Tool:** Apache Maven (Wrapper included: `./mvnw`, `mvnw.cmd`)
 
 ### AI & Orchestration Engine
-- **Framework:** Python 3.10+, FastAPI, Uvicorn
-- **Orchestration:** LangGraph 0.2+, LangChain Core
-- **Validation:** Pydantic v2, `sqlglot` (SQL AST parser)
-- **Database Driver:** `psycopg2-binary`, `pgvector-python`
-- **Concurrency:** Thread-safe cooperative `CancellationToken`
+- **Framework:** Python 3.10+, FastAPI (`>=0.100.0`), Uvicorn (`>=0.20.0`)
+- **Orchestration:** LangGraph (`>=0.2.0`)
+- **SQL Parsing:** `sqlglot` (`>=20.0.0`)
+- **Data Validation:** Pydantic (`>=2.0.0`)
+- **Database Driver:** `psycopg2-binary` (`>=2.9.0`)
+- **Scientific Formats:** `netCDF4` (`>=1.6.0`), `pandas` (`>=2.0.0`), `pyarrow` (`>=14.0.0`)
 
 ### Local Inference & Storage
-- **LLM Engine:** Ollama (local CPU/GPU inference)
+- **LLM Engine:** Ollama (Local CPU/GPU inference)
   - **Generation Model:** `qwen2.5:1.5b-instruct`
   - **Embedding Model:** `nomic-embed-text` (768-dimensional embeddings)
-- **Database:** PostgreSQL 15 with **PostGIS** (geospatial indexing) and **pgvector** (vector indexing)
+- **Database:** PostgreSQL 15 with **PostGIS** and **pgvector** extensions
 
 ---
 
 ## 9. Database Architecture
 
-The data tier is deployed on PostgreSQL 15, containerized via Docker Compose, and partitioned into distinct logical domains:
+The database environment is containerized via Docker Compose on PostgreSQL 15:
 
-### Relational ARGO Schema (`floatchat_db`)
-- `argo_floats`: Float platform metadata (WMO platform number, float owner, deployment date).
-- `argo_profiles`: Profile metadata (cycle number, timestamp, location geometry `GEOMETRY(Point, 4326)`).
-- `argo_measurements`: High-resolution depth-level observations (profile foreign key, pressure in decibars, temperature in °C, salinity in PSU, QC quality flags).
+### 1. Relational ARGO Schema (`floatchat_db`)
+- `argo_floats`: Float platform metadata (`platform_number VARCHAR(64) PRIMARY KEY`, `created_at`).
+- `argo_profiles`: Profile metadata (`profile_id VARCHAR(255) PRIMARY KEY`, `platform_number REFERENCES argo_floats`, `profile_time TIMESTAMPTZ`, `latitude`, `longitude`, `location GEOMETRY(Point, 4326)`).
+- `argo_measurements`: Vertical subsurface observations (`measurement_id BIGINT PRIMARY KEY`, `profile_id REFERENCES argo_profiles`, `pressure_dbar`, `temperature_c`, `salinity_psu`).
+- **Join Relationship:** `argo_measurements.profile_id = argo_profiles.profile_id` and `argo_profiles.platform_number = argo_floats.platform_number`.
 
-### Scientific Vector Store (`argo_knowledge_chunks`)
-- Storage for domain literature and ARGO technical documentation.
-- Indexed with `vector(768)` utilizing HNSW cosine distance indexes (`vector_cosine_ops`) for sub-millisecond similarity lookups.
+### 2. Scientific Vector Store (`argo_doc_embeddings`)
+- Stores domain literature and ARGO technical guides.
+- Schema: `chunk_id BIGSERIAL PRIMARY KEY`, `document_title`, `section_title`, `chunk_content`, `metadata JSONB`, `embedding vector(768)`.
+- Retrieval uses cosine distance (`<=>`) against 768-dimensional embeddings generated by `nomic-embed-text`.
 
-### Application Persistence Schema (`floatchat_app`)
-- `users`: User credentials, password hashes (BCrypt), and assigned roles (`ROLE_USER`, `ROLE_SCIENTIST`, `ROLE_ADMIN`).
-- `query_history`: Historical log of queries, response payloads, workflow classifications, and latency metrics.
-- `conversations`: Conversation sessions and multi-turn message history.
+### 3. Application Database (`floatchat_app`)
+- Managed by Spring Boot JPA.
+- `users`: User credentials, BCrypt password hashes, and user roles (`USER`, `ADMIN`, `SUPER_ADMIN`).
+- `query_history`: Historical log of executed queries, response payloads, workflows, and latency.
+- `conversations`: Conversation sessions and message threads.
 
-### Database Security Hardening
-- **Service Isolation:** Python AI Service connects using a dedicated read-only database user (`floatchat_ai_user`).
-- **Privilege Separation:** `floatchat_ai_user` possesses strictly `SELECT` permissions on `argo_*` tables, with no write, update, drop, or administrative rights.
+### 4. Database Roles and Permissions
+- `floatchat_user`: Database superuser used for container administration and initial DDL setup.
+- `floatchat_app_user`: Application user owning and managing `floatchat_app` tables.
+- `floatchat_ai_user`: Dedicated unprivileged role for the Python AI query engine. Granted strictly `SELECT` permissions on `argo_floats`, `argo_profiles`, `argo_measurements`, and `argo_doc_embeddings`. `INSERT`, `UPDATE`, `DELETE`, and `TRUNCATE` are revoked, and connections to `floatchat_app` are restricted.
 
 ---
 
-## 10. ARGO Dataset Information
+## 10. Dataset Information
 
-The local demonstration database contains a verified, high-quality subset of real ARGO oceanographic observations deployed across the **Indian Ocean**:
+The bundled demonstration dataset contains verified real ARGO observations from the **Indian Ocean**:
 
-| Metric | Verified Count | Description |
+| Table | Count | Description |
 | :--- | :--- | :--- |
-| **Active Floats** | **30** | WMO-registered profiling floats operating in the Indian Ocean basin |
-| **Ocean Profiles** | **107** | Ascending and descending sampling cycles with validated GPS coordinates |
-| **Measurements** | **26,046** | High-resolution vertical measurement records (temperature, salinity, pressure) |
-| **Vector Chunks** | **12** | Curated oceanographic knowledge passages covering thermoclines, water masses, and ARGO sensor mechanics |
-| **Embedding Dimension** | **768** | Generated via `nomic-embed-text` |
-| **Temporal Coverage** | **2024–2025** | Validated recent Indian Ocean physical observations |
+| **`argo_floats`** | **30** | WMO-registered profiling floats operating in the Indian Ocean |
+| **`argo_profiles`** | **107** | Ascending and descending sampling profiles with validated GPS coordinates |
+| **`argo_measurements`** | **26,046** | Vertical depth records of pressure, temperature, and salinity |
+| **`argo_doc_embeddings`** | **12** | Curated oceanographic literature chunks (768-dim embeddings) |
+
+- **Temporal Coverage:** January 2, 2024 to April 1, 2025 (UTC).
+- **Geographic Coverage:** Indian Ocean basin.
+- *Note:* This represents a regional demonstration subset prepared for local development and testing, not the complete global ARGO repository.
 
 ---
 
@@ -282,351 +287,298 @@ The local demonstration database contains a verified, high-quality subset of rea
 
 ```
 FLOATCHAT/
-├── .env.example                     # Root environment variable template
-├── .gitignore                        # Git exclusion configuration
-├── docker-compose.yml                # PostgreSQL 15 + PostGIS + pgvector orchestration
-├── README.md                         # Comprehensive project documentation
-├── requirements.txt                  # Python dependencies
+├── .env.example                     # Root environment template
+├── .gitignore                        # Git exclusion rules
+├── docker-compose.yml                # PostgreSQL 15 + PostGIS + pgvector service
+├── pyproject.toml                    # Python package configuration and dependencies
+├── README.md                         # Project documentation
 ├── backend/                          # Spring Boot 3 Java Application Backend
 │   ├── mvnw / mvnw.cmd               # Maven wrappers
-│   ├── pom.xml                       # Maven build configuration
-│   ├── run.ps1                       # Backend startup script (PowerShell)
+│   ├── pom.xml                       # Maven build file (Spring Boot 3.3.5, Java 21)
+│   ├── run.ps1                       # Windows backend startup script
 │   └── src/
 │       ├── main/
 │       │   ├── java/com/floatchat/backend/
 │       │   │   ├── config/           # Security, CORS, and Web MVC configuration
-│       │   │   ├── controller/       # REST API endpoints (Chat, Auth, Dashboard, etc.)
+│       │   │   ├── controller/       # REST controllers (Auth, Chat, Dashboard, Health)
 │       │   │   ├── dto/              # Request / Response Data Transfer Objects
-│       │   │   ├── entity/           # JPA Entities (User, QueryHistory, Conversation)
-│       │   │   ├── integration/      # Python AI service client (Real & Mock providers)
+│       │   │   ├── entity/           # JPA entities (User, QueryHistory, Conversation)
+│       │   │   ├── integration/      # Python AI service client
 │       │   │   ├── repository/       # Spring Data JPA repositories
-│       │   │   └── service/          # Business logic and transaction management
+│       │   │   └── service/          # Business logic and persistence services
 │       │   └── resources/
 │       │       └── application.properties # Spring Boot configuration
 │       └── test/                     # Backend integration and controller tests
-├── frontend/                         # React 18 + Vite Frontend Application
+├── frontend/                         # React 18 + Vite 6 Frontend Application
 │   ├── .env.example                  # Frontend environment template
-│   ├── index.html                    # Single-page application entry HTML
+│   ├── index.html                    # Single-page application entry point
 │   ├── package.json                  # Frontend dependencies and scripts
-│   ├── vite.config.js                # Vite build and proxy configuration
+│   ├── vite.config.js                # Vite build and dev-server proxy configuration
 │   └── src/
-│       ├── components/               # Reusable UI components (Navbar, DataVisualization, etc.)
-│       ├── context/                  # React contexts (AuthContext, ThemeContext)
-│       ├── pages/                    # Route pages (Chat, Dashboard, Visualizations, etc.)
-│       ├── services/                 # API service clients and axios interceptors
-│       ├── styles/                   # CSS stylesheets
-│       └── tests/                    # Frontend Vitest suite (124 tests)
+│       ├── components/               # UI components (Navbar, DataVisualization)
+│       ├── context/                  # React contexts (AuthContext)
+│       ├── pages/                    # Route pages (Chat, Dashboard, Visualizations)
+│       ├── services/                 # API client modules
+│       ├── styles/                   # CSS styling
+│       └── tests/                    # Frontend test suite
 ├── src/                              # Python AI Service (FastAPI + LangGraph)
-│   ├── config.py                     # AI service configuration and environment loading
+│   ├── config.py                     # Service configuration and environment loading
 │   ├── agents/                       # Specialized LangGraph agents
-│   │   ├── query_understanding/      # QueryUnderstandingAgent & Gazetteer
-│   │   ├── data_query/               # DataQueryAgent & SQL generator
-│   │   └── response/                 # ScientificResponseAgent & Chart builder
-│   ├── api/                          # FastAPI route handlers and request models
-│   ├── llm/                          # LLM provider abstractions (Ollama & Gemini)
-│   ├── orchestration/                # LangGraph workflow graphs & CancellationToken
-│   ├── rag/                          # Embeddings, pgvector storage, and vector retrieval
-│   └── security/                     # SQL AST validator and security sanitizer
-├── tests/                            # Python Pytest test suite (451 tests)
-├── data/                             # Sample netCDF datasets and knowledge documents
+│   │   ├── query_understanding/      # Query understanding agent and Indian Ocean gazetteer
+│   │   ├── data_query/               # Data query agent and prompt templates
+│   │   └── response/                 # Response agent and visualization builder
+│   ├── api/                          # FastAPI application and route handlers
+│   ├── llm/                          # LLM provider implementations (Ollama, Gemini)
+│   ├── orchestration/                # LangGraph workflow and cooperative CancellationToken
+│   ├── rag/                          # Embeddings, vector storage, and retriever
+│   └── security/                     # Deterministic SQL AST validator
+├── tests/                            # Python pytest test suite
+├── docker/                           # Dockerfiles for custom container builds
+├── data/                             # Reference NetCDF datasets and benchmark logs
+├── docs/                             # Technical documentation and phase specifications
 └── scripts/                          # Ingestion, benchmarking, and database setup scripts
 ```
 
 ---
 
-## 12. Prerequisites & Installation
+## 12. Prerequisites and Installation
 
-Ensure the following tools are installed on your host system:
-
+### Prerequisites
 1. **Docker & Docker Compose:** Version 24.0+
 2. **Python:** Version 3.10 or 3.11
-3. **Java Development Kit (JDK):** Version 17 or higher
+3. **Java Development Kit (JDK):** Version 21 or higher
 4. **Node.js & npm:** Node.js v18.0+ and npm v9.0+
-5. **Ollama:** Download and install from [ollama.com](https://ollama.com)
+5. **Ollama:** Installed locally from [ollama.com](https://ollama.com)
 
-### Pull Required Ollama Models
-Launch Ollama and pull the required generation and embedding models:
+### 1. Download Required Ollama Models
+Ensure Ollama is running, then pull the generation and embedding models:
 
 ```bash
 ollama pull qwen2.5:1.5b-instruct
 ollama pull nomic-embed-text
 ```
 
----
-
-## 13. Environment Configuration
-
-### Root Environment Setup
-Copy the template `.env.example` in the project root to `.env`:
+### 2. Python Environment Setup
 
 ```bash
-cp .env.example .env
-```
-
-Review `.env` and configure your credentials. The defaults are pre-configured for local containerized development:
-
-```ini
-# LLM Provider
-LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:1.5b-instruct
-
-# Database (Docker container maps internal 5432 to host port 5433)
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5433
-POSTGRES_DB=floatchat_db
-POSTGRES_USER=floatchat_user
-POSTGRES_PASSWORD=your_secure_password_here
-POSTGRES_READONLY_USER=floatchat_ai_user
-POSTGRES_READONLY_PASSWORD=your_secure_readonly_password_here
-
-# Spring Boot Configuration
-APP_DB_HOST=127.0.0.1
-APP_DB_PORT=5433
-APP_DB_NAME=floatchat_app
-APP_DB_USER=floatchat_app_user
-APP_DB_PASSWORD=your_secure_app_password_here
-APP_AI_MODE=real
-AI_SERVICE_URL=http://127.0.0.1:8000
-
-# Security Tokens (minimum 32 characters)
-FLOATCHAT_INTERNAL_SECRET=your_shared_internal_secret_at_least_32_bytes_here
-JWT_SECRET=your_jwt_signing_secret_at_least_32_bytes_here
-```
-
-### Frontend Environment Setup
-Copy `frontend/.env.example` to `frontend/.env`:
-
-```bash
-cp frontend/.env.example frontend/.env
-```
-
-*(Note: For local development, `VITE_API_BASE_URL` can remain blank because Vite automatically proxies `/api` requests to `http://localhost:8080`).*
-
----
-
-## 14. Docker Database Startup
-
-Launch the containerized PostgreSQL database (equipped with PostGIS and pgvector extensions):
-
-```bash
-docker compose up -d --build
-```
-
-Verify the container is running and healthy:
-
-```bash
-docker ps --filter "name=floatchat_postgis_db"
-```
-
-The database accepts connections on host port **`5433`**.
-
----
-
-## 15. Python AI Service Startup
-
-1. Create and activate a Python virtual environment:
-
-```bash
-# Windows
-py -3.10 -m venv venv
-.\venv\Scripts\activate
+# Windows (PowerShell)
+py -3.10 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e .
 
 # Linux / macOS
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
 ```
 
-2. Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-3. Start the FastAPI service via Uvicorn:
-
-```bash
-uvicorn src.api.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-Verify service readiness by querying:
-```bash
-curl http://127.0.0.1:8000/ready
-```
-
----
-
-## 16. Java Spring Boot Backend Startup
-
-In a new terminal, launch the Spring Boot backend service:
-
-### Option A: Using the PowerShell startup helper (Windows)
-```powershell
-powershell -ExecutionPolicy Bypass -File backend\run.ps1
-```
-
-### Option B: Using Maven directly
-```bash
-cd backend
-./mvnw spring-boot:run
-```
-
-The Spring Boot backend will start on **`http://localhost:8080`**.
-
----
-
-## 17. React / Vite Frontend Startup
-
-In another terminal, install dependencies and start the Vite development server:
+### 3. Frontend Dependencies Setup
 
 ```bash
 cd frontend
 npm install
-npm run dev
+cd ..
 ```
-
-Open your browser and navigate to:
-**`http://localhost:5173`**
 
 ---
 
-## 18. API Endpoints
+## 13. Environment Configuration
 
-### Python AI Service (`http://127.0.0.1:8000`)
+FloatChat separates environment configuration across tiers and uses `.env.example` templates to avoid committing credentials.
+
+### Root Environment Setup
+1. Copy `.env.example` in the project root to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+2. Configure local database credentials, Ollama endpoint, and service secrets in `.env`.
+3. Provide secure, random strings for `JWT_SECRET` and `FLOATCHAT_INTERNAL_SECRET` (at least 32 characters).
+4. *Security Notice:* Never commit `.env` or files containing live credentials. The root `.gitignore` excludes `.env` and `.env.*.local`.
+
+### Frontend Environment Setup
+1. Copy `frontend/.env.example` to `frontend/.env`:
+   ```bash
+   cp frontend/.env.example frontend/.env
+   ```
+2. In local development, `VITE_API_BASE_URL` can remain empty because Vite's development server automatically proxies `/api` requests to `http://localhost:8080`.
+
+---
+
+## 14. Running the Application
+
+Launch the services in four terminal sessions:
+
+### Step 1: Start PostgreSQL Container
+```bash
+docker compose up -d --build
+```
+*The database accepts connections on host port **5433** (forwarded to container port 5432).*
+
+### Step 2: Start Python AI Service
+```bash
+# Activate virtual environment first
+# Windows: .\.venv\Scripts\Activate.ps1
+# Linux/macOS: source .venv/bin/activate
+
+uvicorn src.api.main:app --host 127.0.0.1 --port 8000 --reload
+```
+*Verify readiness at: `http://127.0.0.1:8000/ready`*
+
+### Step 3: Start Spring Boot Backend
+```powershell
+# Windows (PowerShell helper)
+powershell -ExecutionPolicy Bypass -File backend\run.ps1
+
+# Cross-platform alternative (Maven)
+cd backend
+./mvnw spring-boot:run
+```
+*The backend service starts on `http://localhost:8080`.*
+
+### Step 4: Start Frontend Development Server
+```bash
+cd frontend
+npm run dev
+```
+*Open your browser and navigate to `http://localhost:5173`.*
+
+---
+
+## 15. API Endpoints
+
+### Python AI Engine (`http://127.0.0.1:8000`)
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `POST` | `/api/v1/chat` | Main LangGraph chat pipeline (supports query understanding, SQL execution, RAG, and visualization generation). |
-| `GET` | `/health` | Basic application liveness check. |
-| `GET` | `/ready` | Readiness check (validates database connection and Ollama model availability). |
-| `GET` | `/api/v1/stats` | Dataset statistics (active floats, total profiles, measurements, vector chunks). |
+| `POST` | `/api/v1/chat` | Main LangGraph chat pipeline (supports cancellation and visualization spec generation). |
+| `POST` | `/api/v1/query` | Compatibility alias for `/api/v1/chat`. |
+| `GET` | `/health` | Application liveness probe. |
+| `GET` | `/ready` | Readiness probe (verifies database connectivity and Ollama model availability). |
+| `GET` | `/api/v1/stats` | Dataset statistics (counts of floats, profiles, measurements, and vector chunks). |
 
 ### Spring Boot Backend (`http://localhost:8080`)
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `POST` | `/api/v1/auth/register` | Register a new user account. |
-| `POST` | `/api/v1/auth/login` | Authenticate with credentials and receive a JWT access token. |
-| `POST` | `/api/v1/chat` | Authenticated chat endpoint; proxies to Python AI engine, attaches audit metadata, and persists history. |
-| `GET` | `/api/v1/conversations` | Retrieve past conversation sessions for the authenticated user. |
-| `GET` | `/api/v1/conversations/{id}`| Retrieve full message history of a specific conversation. |
-| `GET` | `/api/v1/dashboard/metrics` | Real-time system metrics, active query count, and latency trends. |
-| `GET` | `/api/v1/dashboard/stats` | Aggregated user and query volume statistics. |
-| `GET` | `/api/v1/visualizations/recent` | Recent visualization specifications generated for the user. |
+| `POST` | `/api/v1/auth/signup` | Register a new user account. |
+| `POST` | `/api/v1/auth/login` | Authenticate with credentials and receive a JWT token. |
+| `GET` | `/api/v1/auth/me` | Fetch authenticated user profile and assigned role. |
+| `POST` | `/api/v1/auth/bootstrap-super-admin` | Initialize the first `SUPER_ADMIN` account. |
+| `POST` | `/api/v1/chat` | Authenticated chat endpoint; proxies to AI service and persists conversation history. |
+| `GET` | `/api/v1/conversations` | List conversation sessions for the authenticated user. |
+| `GET` | `/api/v1/conversations/{id}` | Retrieve full message thread for a conversation. |
+| `DELETE` | `/api/v1/conversations/{id}` | Delete a conversation session. |
+| `GET` | `/api/v1/history` | Paginated query history log for the user. |
+| `GET` | `/api/v1/user/dashboard` | Dashboard metrics for `USER` role. |
+| `GET` | `/api/v1/admin/dashboard` | Management metrics for `ADMIN` role. |
+| `GET` | `/api/v1/super-admin/dashboard` | System metrics for `SUPER_ADMIN` role. |
+| `GET` | `/api/v1/visualizations` | Retrieve recent visualization specifications. |
+| `GET` | `/api/v1/visualizations/{id}` | Retrieve a specific visualization specification. |
+| `GET` | `/api/v1/health` | Backend service health check. |
+| `GET` | `/api/v1/ai/status` | Upstream AI service status check. |
 
 ---
 
-## 19. Example Queries for Demonstration
+## 16. Example Demonstration Queries
 
-Try entering these representative queries in the FloatChat interface:
-
-### 1. Vertical Temperature Depth Profile (Inverted Depth Line Chart)
+### 1. Vertical Depth Profile (Inverted Line Chart)
 > *"Show the vertical temperature profile for float 1902671."*
 - **Workflow:** `DATA_ONLY`
-- **Output:** Inverted vertical profile chart (Pressure on the Y-axis with 0 dbar at the top, Temperature on the X-axis).
+- **Output:** Inverted vertical profile chart (Pressure on Y-axis with 0 dbar at the surface, Temperature on X-axis).
 
 ### 2. Temperature Measurement Distribution (Histogram)
 > *"Analyze the distribution of temperature measurements for float 1902671 and visualize the distribution using appropriate temperature intervals."*
 - **Workflow:** `DATA_ONLY`
-- **Output:** Bar chart histogram showing frequency counts across binned temperature intervals.
+- **Output:** Frequency histogram showing measurement counts across binned temperature intervals.
 
 ### 3. Salinity Measurement Distribution (Histogram)
 > *"Show the distribution of salinity observations for float 5906970."*
 - **Workflow:** `DATA_ONLY`
-- **Output:** Salinity frequency distribution across practical salinity unit (PSU) bins.
+- **Output:** Frequency histogram showing observation counts across practical salinity unit (PSU) bins.
 
 ### 4. Temperature vs. Salinity Diagram (T-S Scatter Plot)
 > *"Plot temperature versus salinity for float 1902671."*
 - **Workflow:** `DATA_ONLY`
-- **Output:** Oceanographic T-S scatter diagram showing water mass density characteristics.
+- **Output:** Scatter plot displaying the relationship between salinity (PSU) and temperature (°C).
 
 ### 5. Temporal Trends (Time Series Line Chart)
 > *"Show the average temperature over time for float 1902671."*
 - **Workflow:** `DATA_ONLY`
-- **Output:** Chronological line chart depicting average observed temperature across recorded profile cycles.
+- **Output:** Chronological line chart showing average temperature values across profile observation dates.
 
-### 6. Conceptual Ocean Physics Query
+### 6. Conceptual Oceanographic Knowledge Query
 > *"What is an ARGO float and how does it measure ocean salinity?"*
 - **Workflow:** `KNOWLEDGE_ONLY`
-- **Output:** RAG-grounded scientific explanation detailing CTD (Conductivity, Temperature, Depth) sensors, buoyancy engines, and satellite telemetry, with citations.
+- **Output:** RAG-grounded scientific explanation describing CTD sensors, buoyancy cycles, and satellite transmission, with literature citations.
 
-### 7. Hybrid Analysis Query
+### 7. Hybrid Query
 > *"Explain what the thermocline is and show the temperature profile for float 1902671."*
 - **Workflow:** `HYBRID`
-- **Output:** Combined theoretical explanation of the ocean thermocline alongside an interactive vertical temperature depth profile.
+- **Output:** Theoretical overview of the ocean thermocline alongside an interactive vertical temperature depth profile.
 
 ---
 
-## 20. Testing Instructions
+## 17. Testing
 
-FloatChat includes comprehensive test suites across all tiers:
+FloatChat maintains automated test suites across all three application layers:
 
-### Python AI Service Test Suite (451 tests)
-Run pytest with unit and integration tests:
+### Python AI Service Test Suite
+Run unit, validation, and LangGraph workflow tests with `pytest`:
 
 ```bash
 pytest tests -v
 ```
 
-Tests cover:
-- Agent state transitions and graph routing
-- Deterministic SQL AST validation and injection rejection
-- Gazetteer spatial coordinate lookups
-- Visualization specification synthesis
-- Cooperative cancellation token behavior
+- **Scope:** SQL AST validation rules, query intent extraction, Indian Ocean gazetteer bounding-box matching, RAG retriever logic, visualization spec builders, and cooperative cancellation tokens.
+- **Verification Status:** **451 tests passing**, 1 skipped (optional cloud Gemini integration).
 
-### React Frontend Test Suite (124 tests)
-Run Vitest with React Testing Library:
+### Frontend Test Suite
+Run the frontend component, routing, and visualization tests:
 
 ```bash
 cd frontend
 npm test
 ```
 
-Tests cover:
-- Authentication state and JWT session expiry handling
-- Dynamic chart type rendering and axis configuration
-- Chat message stream formatting and citation rendering
-- Route protection and error boundary handling
+- **Scope:** Authentication lifecycle, Axios 401 interception, route guards, conversation restoration, chart type selection, timestamp formatting, and depth axis orientation.
+- **Verification Status:** **124 tests passing** across 9 test suites.
 
-### Spring Boot Backend Test Suite
-Run Maven test lifecycle:
+### Backend Test Suite
+Run Spring Boot tests using Maven:
 
 ```bash
 cd backend
 ./mvnw test
 ```
 
-Tests cover:
-- Spring Security authentication and JWT token issuance
-- AI service integration and fallback mock providers
-- Conversation restoration and transaction boundaries
+- **Scope:** Security configuration, JWT token issuance, conversation transaction boundaries, and AI provider integration fallbacks.
 
 ---
 
-## 21. Known Limitations
+## 18. Known Limitations
 
-- **CPU Inference Latency:** Running local LLMs (`qwen2.5:1.5b-instruct`) on standard laptop CPUs typically takes 10–25 seconds per inference turn. Systems with dedicated NVIDIA GPUs or remote Ollama servers experience sub-3-second responses.
-- **Dataset Geographic Scope:** The packaged demonstration database contains a 30-float subset focused on the Indian Ocean basin covering 2024–2025 observations.
-- **Query Row Ceiling:** Queries are capped at 500 rows to ensure sub-second browser chart rendering and prevent DOM memory exhaustion.
-
----
-
-## 22. Future Scope
-
-- **Live GTS Data Streaming:** Ingesting live netCDF feeds directly from the Global Telecommunication System (GTS) and INCOIS FTP servers in real time.
-- **Multi-Model GPU Serving:** Supporting vLLM or TensorRT-LLM containerized microservices for concurrent high-throughput inference.
-- **3D Geospatial Ocean Volume:** Integrating CesiumJS or Mapbox GL for interactive 3D bathymetric and water column visualization.
-- **Automated Anomaly Detection:** Real-time alerting for marine heatwaves, oxygen minimum zones (OMZ), and extreme salinity anomalies.
+- **Local CPU Inference Latency:** Running local LLMs (`qwen2.5:1.5b-instruct`) on laptop CPUs typically requires 8–25 seconds per conversational turn depending on query type and CPU thread availability.
+- **Cooperative Cancellation Scope:** The `CancellationToken` checks for cancellation between LangGraph nodes and processing steps. It does not forcibly terminate in-flight synchronous HTTP network requests while Ollama is actively processing a token generation step.
+- **Demonstration Dataset Boundary:** The local PostgreSQL database is loaded with an Indian Ocean regional subset (30 floats, 107 profiles, 26,046 measurements) covering 2024 to early 2025. It does not represent the full global ARGO repository.
+- **SQL Row Ceiling:** Observational queries enforce a default result limit of 500 rows (hard ceiling of 1000) to protect browser memory and maintain responsive chart rendering.
 
 ---
 
-## 23. Team & Acknowledgements
+## 19. Future Scope
+
+- **Real-Time GTS Data Ingestion:** Automated netCDF ingestion from the Global Telecommunication System (GTS) and national ocean data centers.
+- **GPU Inference Serving:** Support for high-throughput serving frameworks (such as vLLM or TensorRT-LLM) for faster inference times.
+- **3D Geospatial Visualizations:** Integration of 3D globe and bathymetric volume rendering for ocean current dynamics.
+- **Automated Marine Anomaly Detection:** Automated detection and alerting for marine heatwaves and extreme salinity events.
+
+---
+
+## 20. Team and Acknowledgements
 
 FloatChat AI is developed as an open-source oceanographic data exploration platform.
 
 ### Acknowledgements
-- **INCOIS (Indian National Centre for Ocean Information Services):** For oceanographic data guidance and observation datasets.
-- **International ARGO Program:** For pioneering global ocean observation and maintaining open data access.
+- **INCOIS (Indian National Centre for Ocean Information Services):** For oceanographic observation data and domain guidance.
+- **International ARGO Program:** For global ocean observation data access.
 - **Scripps Institution of Oceanography & Coriolis:** For data standards, calibration quality control guidelines, and documentation.
-- **Open Source Communities:** LangGraph, FastAPI, Spring Boot, React, Vite, Chart.js, PostgreSQL/PostGIS, pgvector, and Ollama.
+- **Open Source Communities:** FastAPI, LangGraph, Spring Boot, React, Vite, Recharts, Leaflet, PostgreSQL/PostGIS, pgvector, and Ollama.
